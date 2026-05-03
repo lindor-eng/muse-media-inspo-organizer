@@ -30,19 +30,24 @@ export function ImageFocus() {
     if (!image || phase !== 'measure') return;
     if (containerRef.current && focusOriginRect && image.width && image.height) {
       const container = containerRef.current.getBoundingClientRect();
+      // Account for detail panel (w-72 = 288px) that will slide in simultaneously
+      const panelWidth = 288;
+      const adjustedWidth = container.width - panelWidth;
       const padding = 16;
-      const availW = container.width - padding * 2;
+      const availW = adjustedWidth - padding * 2;
       const availH = container.height - padding * 2;
       const scale = Math.min(availW / image.width, availH / image.height, 1);
       const imgW = image.width * scale;
       const imgH = image.height * scale;
-      const imgX = container.x + (container.width - imgW) / 2;
+      const imgX = container.x + (adjustedWidth - imgW) / 2;
       const imgY = container.y + (container.height - imgH) / 2;
       setTargetRect({ x: imgX, y: imgY, width: imgW, height: imgH });
       setPhase('initial');
     } else if (containerRef.current && focusOriginRect) {
       const rect = containerRef.current.getBoundingClientRect();
-      setTargetRect({ x: rect.x + 16, y: rect.y + 16, width: rect.width - 32, height: rect.height - 32 });
+      const panelWidth = 288;
+      const adjustedWidth = rect.width - panelWidth;
+      setTargetRect({ x: rect.x + 16, y: rect.y + 16, width: adjustedWidth - 32, height: rect.height - 32 });
       setPhase('initial');
     } else {
       setPhase('done');
