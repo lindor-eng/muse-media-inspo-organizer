@@ -94,6 +94,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
 );
 `;
 
+const VECTOR_TABLE_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS image_embeddings USING vec0(
+    image_id TEXT PRIMARY KEY,
+    embedding float[512]
+);
+`;
+
 export function runMigrations(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
+  db.exec(VECTOR_TABLE_SQL);
 }

@@ -48,6 +48,15 @@ const api = {
   autoTag: (imageId: string) => ipcRenderer.invoke('ai:autoTag', imageId),
   searchByText: (query: string) => ipcRenderer.invoke('ai:searchByText', query),
   findSimilar: (imageId: string) => ipcRenderer.invoke('ai:findSimilar', imageId),
+  getEmbeddingCount: () => ipcRenderer.invoke('ai:embeddingCount'),
+  generateMissingEmbeddings: () => ipcRenderer.invoke('ai:generateMissingEmbeddings'),
+
+  // Embedding progress
+  onEmbeddingProgress: (callback: (data: { current: number; total: number; status: string }) => void) => {
+    const handler = (_: unknown, data: { current: number; total: number; status: string }) => callback(data);
+    ipcRenderer.on('embedding:progress', handler);
+    return () => ipcRenderer.removeListener('embedding:progress', handler);
+  },
 
   // Get native file path from a dropped File object
   getPathForFile: (file: File) => webUtils.getPathForFile(file),

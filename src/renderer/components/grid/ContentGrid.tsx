@@ -1,10 +1,10 @@
 import { useCallback } from 'react';
-import { Search, Plus, Import } from 'lucide-react';
+import { Search, Plus, Import, Loader2 } from 'lucide-react';
 import { useAppStore } from '../../stores/app-store';
 import { ImageCard } from './ImageCard';
 
 export function ContentGrid() {
-  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, selectedImageId, isClosingFocus } = useAppStore();
+  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus } = useAppStore();
   const showToolbar = !selectedImageId || isClosingFocus;
 
   const currentFolderName = viewMode === 'folder'
@@ -34,12 +34,21 @@ export function ContentGrid() {
         style={{ transitionTimingFunction: 'cubic-bezier(0.2, 0.9, 0.3, 1)', transitionDuration: '350ms' }}
       >
         <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+          {isSearching ? (
+            <Loader2 size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-blue-400 animate-spin" />
+          ) : (
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+          )}
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search..."
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && searchQuery.trim()) {
+                executeSearch(searchQuery.trim());
+              }
+            }}
+            placeholder="Search images..."
             className="pl-8 pr-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded-md text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 w-48"
           />
         </div>

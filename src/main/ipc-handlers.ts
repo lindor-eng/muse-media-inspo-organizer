@@ -9,7 +9,7 @@ import { extractAndStoreColors } from './color-extractor';
 import { isOllamaRunning } from './ai/ollama-client';
 import { autoTagImage } from './ai/auto-tagger';
 import { isSidecarRunning, startSidecar, stopSidecar } from './ai/python-sidecar';
-import { searchByText, findSimilarImages } from './ai/natural-search';
+import { searchByText, findSimilarImages, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
 
 export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): void {
   const folderRepo = createFolderRepo(db);
@@ -70,11 +70,15 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         }
       }
     }
-    // Queue auto-tagging in background (non-blocking)
+    // Queue auto-tagging and embedding generation in background (non-blocking)
     setTimeout(async () => {
       for (const result of results) {
         if (result.success) {
           await autoTagImage(db, result.id).catch(() => {});
+          const img = imageRepo.getById(result.id);
+          if (img) {
+            await generateAndStoreEmbedding(db, result.id, img.original_path).catch(() => {});
+          }
         }
       }
     }, 100);
@@ -100,6 +104,21 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
 
   ipcMain.handle('ai:findSimilar', async (_, imageId: string) => {
     return findSimilarImages(db, imageId);
+  });
+
+  ipcMain.handle('ai:embeddingCount', () => getEmbeddingCount(db));
+
+  ipcMain.handle('ai:generateMissingEmbeddings', async () => {
+    const allImages = db.prepare(
+      'SELECT id, original_path FROM images WHERE is_trashed = 0 AND id NOT IN (SELECT image_id FROM image_embeddings)'
+    ).all() as { id: string; original_path: string }[];
+
+    let generated = 0;
+    for (const img of allImages) {
+      const ok = await generateAndStoreEmbedding(db, img.id, img.original_path);
+      if (ok) generated++;
+    }
+    return { generated, total: allImages.length };
   });
 
   // Clipboard
