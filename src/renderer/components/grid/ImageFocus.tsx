@@ -2,11 +2,31 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 import { ArrowLeft, ZoomIn, ZoomOut } from 'lucide-react';
 import { useAppStore, type ImageRecord } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
+import { SimilarImagesStrip } from '../detail/SimilarImagesStrip';
+import { SimilarityInspectorPopover } from '../detail/SimilarityInspectorPopover';
 
 type Phase = 'measure' | 'initial' | 'animating' | 'done' | 'exit-start' | 'exiting';
 
 export function ImageFocus() {
-  const { selectedImageId, setSelectedImage, focusOriginRect, setClosingFocus, images } = useAppStore();
+  const {
+    selectedImageId,
+    setSelectedImage,
+    focusOriginRect,
+    setClosingFocus,
+    images,
+    similarImages,
+    isFetchingSimilar,
+    similarEmptyHint,
+    similarFetchEmbedBaseline,
+    similarMatchesMeta,
+    similarityPrefs,
+    saveSimilarityPrefsAndRefresh,
+    similarNavStack,
+    similarNavGoBack,
+    similarRefineMode,
+    setSimilarRefineMode,
+  } = useAppStore();
+  const [clipSidecar, setClipSidecar] = useState<boolean | null>(null);
   const [image, setImage] = useState<ImageRecord | null>(null);
   const [phase, setPhase] = useState<Phase>('measure');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -16,14 +36,53 @@ export function ImageFocus() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const stripAnchorRef = useRef<HTMLDivElement>(null);
+  const [similarInspectorOpen, setSimilarInspectorOpen] = useState(false);
   const [toast, setToast] = useState(false);
 
   const isZoomed = zoom > 1;
+  const similarNavBackPeek = similarNavStack[similarNavStack.length - 1] ?? null;
 
   useEffect(() => {
     if (selectedImageId) {
       api.getImage(selectedImageId).then(setImage);
     }
+  }, [selectedImageId]);
+
+  useEffect(() => {
+    if (!selectedImageId) {
+      setClipSidecar(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const s = (await api.getAIStatus()) as { sidecar?: boolean };
+        if (!cancelled) setClipSidecar(Boolean(s?.sidecar));
+      } catch {
+        if (!cancelled) setClipSidecar(null);
+      }
+    };
+    poll();
+    const tid = window.setInterval(poll, 9000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(tid);
+    };
+  }, [selectedImageId]);
+
+  useEffect(() => {
+    if (!similarInspectorOpen) return;
+    const handleDown = (e: MouseEvent) => {
+      if (stripAnchorRef.current?.contains(e.target as Node)) return;
+      setSimilarInspectorOpen(false);
+    };
+    document.addEventListener('mousedown', handleDown);
+    return () => document.removeEventListener('mousedown', handleDown);
+  }, [similarInspectorOpen]);
+
+  useEffect(() => {
+    setSimilarInspectorOpen(false);
   }, [selectedImageId]);
 
   useLayoutEffect(() => {
@@ -275,6 +334,46 @@ export function ImageFocus() {
           />
         )}
       </div>
+
+      {phase === 'done' && (
+        <footer ref={stripAnchorRef} className="shrink-0 border-t border-gray-800 px-4 py-3 bg-gray-950">
+          <SimilarImagesStrip
+            similarityPreset={similarityPrefs}
+            onSimilarityLensChange={saveSimilarityPrefsAndRefresh}
+            entries={similarImages}
+            loading={isFetchingSimilar}
+            currentImageId={image.id}
+            emptyHint={similarEmptyHint}
+            onPick={(nextId, rect) =>
+              setSelectedImage(nextId, rect ?? focusOriginRect ?? null, { similarityAnchorSnapshot: image })
+            }
+            similarNavBackThumb={similarNavBackPeek}
+            onSimilarNavBack={similarNavGoBack}
+            size="md"
+            similarFetchEmbedBaseline={similarFetchEmbedBaseline}
+            similarMatchesMeta={similarMatchesMeta}
+            clipSidecarRunning={clipSidecar}
+            showInspectorGear
+            inspectorSettingsOpen={similarInspectorOpen}
+            inspectorSettingsPopover={
+              similarInspectorOpen ? (
+                <SimilarityInspectorPopover
+                  prefs={similarityPrefs}
+                  peerCandidatesIndexed={similarMatchesMeta?.peerCandidatesWithEmbedding ?? undefined}
+                  onCancel={() => setSimilarInspectorOpen(false)}
+                  onSave={async (next) => {
+                    await saveSimilarityPrefsAndRefresh(next);
+                    setSimilarInspectorOpen(false);
+                  }}
+                />
+              ) : undefined
+            }
+            onInspectorGearClick={() => setSimilarInspectorOpen((o) => !o)}
+            similarRefineMode={similarRefineMode}
+            onSimilarRefineModeChange={setSimilarRefineMode}
+          />
+        </footer>
+      )}
       {showOverlay && (
         <img
           src={src}

@@ -40,7 +40,13 @@ CREATE TABLE IF NOT EXISTS images (
     updated_at      TEXT DEFAULT (datetime('now')),
     imported_at     TEXT DEFAULT (datetime('now')),
     file_created_at TEXT,
-    file_modified_at TEXT
+    file_modified_at TEXT,
+    indexed_chromatic INTEGER,
+    indexed_hue_bucket INTEGER,
+    indexed_hue_strength REAL,
+    indexed_hue_degrees REAL,
+    indexed_hue_bucket_2 INTEGER,
+    indexed_hue_strength_2 REAL
 );
 CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_id);
 CREATE INDEX IF NOT EXISTS idx_images_hash ON images(hash);
@@ -89,6 +95,12 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS image_embeddings (
+    image_id    TEXT PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    embedding   BLOB NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
     title, notes, tags_text, content=images, content_rowid=rowid
 );
@@ -101,7 +113,41 @@ CREATE VIRTUAL TABLE IF NOT EXISTS image_embeddings USING vec0(
 );
 `;
 
+function ensureImagesIndexedChromatic(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(images)').all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'indexed_chromatic')) {
+    db.exec('ALTER TABLE images ADD COLUMN indexed_chromatic INTEGER');
+  }
+}
+
+function ensureImagesHueIndex(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(images)').all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has('indexed_hue_bucket')) {
+    db.exec('ALTER TABLE images ADD COLUMN indexed_hue_bucket INTEGER');
+  }
+  if (!names.has('indexed_hue_strength')) {
+    db.exec('ALTER TABLE images ADD COLUMN indexed_hue_strength REAL');
+  }
+  if (!names.has('indexed_hue_degrees')) {
+    db.exec('ALTER TABLE images ADD COLUMN indexed_hue_degrees REAL');
+  }
+  if (!names.has('indexed_hue_bucket_2')) {
+    db.exec('ALTER TABLE images ADD COLUMN indexed_hue_bucket_2 INTEGER');
+  }
+  if (!names.has('indexed_hue_strength_2')) {
+    db.exec('ALTER TABLE images ADD COLUMN indexed_hue_strength_2 REAL');
+  }
+}
+
+function ensureImagesHueBucketIndex(db: Database.Database): void {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_images_dominant_hue ON images(indexed_hue_bucket)');
+}
+
 export function runMigrations(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
   db.exec(VECTOR_TABLE_SQL);
+  ensureImagesIndexedChromatic(db);
+  ensureImagesHueIndex(db);
+  ensureImagesHueBucketIndex(db);
 }

@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
+import type { SimilarRefineMode } from '../shared/similar-refine';
+
 let currentFolderId: string | null = null;
 
 const api = {
@@ -29,6 +31,8 @@ const api = {
 
   // Colors
   getColorsForImage: (imageId: string) => ipcRenderer.invoke('colors:getForImage', imageId),
+  /** Fills `indexed_chromatic`, hue bucket, strength, and mean hue from each thumbnail. */
+  reindexChromaticFlags: () => ipcRenderer.invoke('colors:reindexChromaticFlags'),
 
   // Import
   importFiles: (filePaths: string[], folderId: string | null) =>
@@ -47,9 +51,16 @@ const api = {
   getAIStatus: () => ipcRenderer.invoke('ai:status'),
   autoTag: (imageId: string) => ipcRenderer.invoke('ai:autoTag', imageId),
   searchByText: (query: string) => ipcRenderer.invoke('ai:searchByText', query),
-  findSimilar: (imageId: string) => ipcRenderer.invoke('ai:findSimilar', imageId),
+  findSimilar: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
+    ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),
+  getSimilarImages: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
+    ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),
   getEmbeddingCount: () => ipcRenderer.invoke('ai:embeddingCount'),
   generateMissingEmbeddings: () => ipcRenderer.invoke('ai:generateMissingEmbeddings'),
+
+  embeddingsHasForImage: (imageId: string) => ipcRenderer.invoke('embeddings:hasForImage', imageId),
+  getSimilarityPrefs: () => ipcRenderer.invoke('settings:getSimilarityPrefs'),
+  setSimilarityPrefs: (prefs: unknown) => ipcRenderer.invoke('settings:setSimilarityPrefs', prefs),
 
   // Embedding progress
   onEmbeddingProgress: (callback: (data: { current: number; total: number; status: string }) => void) => {

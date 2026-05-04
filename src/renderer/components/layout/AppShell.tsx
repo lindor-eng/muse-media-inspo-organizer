@@ -8,7 +8,7 @@ import { useAppStore } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
 export function AppShell() {
-  const { selectedImageId, theme, refreshAll } = useAppStore();
+  const { selectedImageId, theme, refreshAll, fetchSimilarImages } = useAppStore();
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -61,6 +61,10 @@ export function AppShell() {
       cleanup();
     };
   }, [refreshAll]);
+
+  useEffect(() => {
+    fetchSimilarImages(selectedImageId ?? null);
+  }, [selectedImageId, fetchSimilarImages]);
 
   return (
     <div className={`h-screen flex overflow-hidden ${theme === 'dark' ? 'dark' : ''}`}>
