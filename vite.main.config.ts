@@ -5,6 +5,7 @@ export default defineConfig({
     rollupOptions: {
       external: [
         'better-sqlite3',
+        'sqlite-vec',
         'sharp',
         'chokidar',
         'node-vibrant',

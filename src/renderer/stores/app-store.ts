@@ -63,6 +63,7 @@ interface AppState {
   theme: 'light' | 'dark';
   isImporting: boolean;
   searchQuery: string;
+  isSearching: boolean;
   draggingImageId: string | null;
   focusOriginRect: { x: number; y: number; width: number; height: number } | null;
   isClosingFocus: boolean;
@@ -72,6 +73,7 @@ interface AppState {
   setSelectedImage: (id: string | null, originRect?: { x: number; y: number; width: number; height: number } | null) => void;
   setClosingFocus: (closing: boolean) => void;
   setSearchQuery: (query: string) => void;
+  executeSearch: (query: string) => Promise<void>;
   setTheme: (theme: 'light' | 'dark') => void;
   setDraggingImage: (id: string | null) => void;
 
@@ -103,6 +105,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: 'dark',
   isImporting: false,
   searchQuery: '',
+  isSearching: false,
   draggingImageId: null,
   focusOriginRect: null,
   isClosingFocus: false,
@@ -116,7 +119,38 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSelectedImage: (id, originRect = null) => set({ selectedImageId: id, focusOriginRect: originRect ?? null, isClosingFocus: false }),
   setClosingFocus: (closing) => set({ isClosingFocus: closing }),
-  setSearchQuery: (query) => set({ searchQuery: query }),
+  setSearchQuery: (query) => {
+    set({ searchQuery: query });
+    if (!query.trim()) {
+      get().loadImages();
+    }
+  },
+
+  executeSearch: async (query) => {
+    if (!query.trim()) {
+      await get().loadImages();
+      return;
+    }
+    set({ isSearching: true });
+    try {
+      const results = await api.searchByText(query) as { image_id: string; distance: number }[];
+      if (results.length > 0) {
+        const imageIds = results.map((r) => r.image_id);
+        const images: ImageRecord[] = [];
+        for (const id of imageIds) {
+          const img = await api.getImage(id);
+          if (img && !img.is_trashed) images.push(img);
+        }
+        set({ images, totalImages: images.length });
+      } else {
+        set({ images: [], totalImages: 0 });
+      }
+    } catch {
+      set({ images: [], totalImages: 0 });
+    } finally {
+      set({ isSearching: false });
+    }
+  },
   setTheme: (theme) => set({ theme }),
   setDraggingImage: (id) => set({ draggingImageId: id }),
 

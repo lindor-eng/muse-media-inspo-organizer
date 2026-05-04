@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { app } from 'electron';
+import * as sqliteVec from 'sqlite-vec';
 import { runMigrations } from './schema';
 
 let db: Database.Database | null = null;
@@ -24,6 +25,8 @@ export function initDatabase(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
+
+  sqliteVec.load(db);
 
   runMigrations(db);
 
