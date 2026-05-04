@@ -6,7 +6,7 @@ import { api } from '../../lib/ipc';
 type Phase = 'measure' | 'initial' | 'animating' | 'done' | 'exit-start' | 'exiting';
 
 export function ImageFocus() {
-  const { selectedImageId, setSelectedImage, focusOriginRect, setClosingFocus } = useAppStore();
+  const { selectedImageId, setSelectedImage, focusOriginRect, setClosingFocus, images } = useAppStore();
   const [image, setImage] = useState<ImageRecord | null>(null);
   const [phase, setPhase] = useState<Phase>('measure');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -93,9 +93,24 @@ export function ImageFocus() {
     }
   }, [phase, focusOriginRect, setSelectedImage, setClosingFocus]);
 
+  const navigateImage = useCallback((direction: -1 | 1) => {
+    if (!selectedImageId || images.length === 0) return;
+    const currentIndex = images.findIndex((img) => img.id === selectedImageId);
+    if (currentIndex === -1) return;
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= images.length) return;
+    const nextImage = images[nextIndex];
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setSelectedImage(nextImage.id, focusOriginRect);
+    setPhase('done');
+  }, [selectedImageId, images, focusOriginRect, setSelectedImage]);
+
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key === 'Escape') handleClose();
+      if (e.key === 'ArrowLeft') { e.preventDefault(); navigateImage(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); navigateImage(1); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'c' && image) {
         e.preventDefault();
         const success = await window.electronAPI.copyImageToClipboard(image.original_path);
@@ -107,7 +122,7 @@ export function ImageFocus() {
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleClose, image]);
+  }, [handleClose, image, navigateImage]);
 
   const handleZoomChange = (newZoom: number) => {
     const clamped = Math.max(1, Math.min(5, newZoom));
