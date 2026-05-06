@@ -85,33 +85,47 @@ export function ImageFocus() {
     setSimilarInspectorOpen(false);
   }, [selectedImageId]);
 
+  const computeTargetRect = useCallback((containerEl: HTMLElement, imgW: number, imgH: number, panelOffset = 0, stripOffset = 0) => {
+    const container = containerEl.getBoundingClientRect();
+    const padding = 16;
+    const w = container.width - panelOffset;
+    const h = container.height - stripOffset;
+    const availW = w - padding * 2;
+    const availH = h - padding * 2;
+    const scale = Math.min(availW / imgW, availH / imgH);
+    const finalW = imgW * scale;
+    const finalH = imgH * scale;
+    const x = container.x + (w - finalW) / 2;
+    const y = container.y + (availH - finalH) / 2 + padding;
+    return { x, y, width: finalW, height: finalH };
+  }, []);
+
   useLayoutEffect(() => {
     if (!image || phase !== 'measure') return;
     if (containerRef.current && focusOriginRect && image.width && image.height) {
-      const container = containerRef.current.getBoundingClientRect();
-      // Account for detail panel (w-72 = 288px) that will slide in simultaneously
-      const panelWidth = 288;
-      const adjustedWidth = container.width - panelWidth;
-      const padding = 16;
-      const availW = adjustedWidth - padding * 2;
-      const availH = container.height - padding * 2;
-      const scale = Math.min(availW / image.width, availH / image.height, 1);
-      const imgW = image.width * scale;
-      const imgH = image.height * scale;
-      const imgX = container.x + (adjustedWidth - imgW) / 2;
-      const imgY = container.y + (container.height - imgH) / 2;
-      setTargetRect({ x: imgX, y: imgY, width: imgW, height: imgH });
+      // Panel uses -mr-72 when hidden so container is 288px wider than final state
+      // Strip has h-[130px] so it already takes layout space — no height offset needed
+      setTargetRect(computeTargetRect(containerRef.current, image.width, image.height, 288));
       setPhase('initial');
     } else if (containerRef.current && focusOriginRect) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const panelWidth = 288;
-      const adjustedWidth = rect.width - panelWidth;
-      setTargetRect({ x: rect.x + 16, y: rect.y + 16, width: adjustedWidth - 32, height: rect.height - 32 });
+      const container = containerRef.current.getBoundingClientRect();
+      const w = container.width - 288;
+      setTargetRect({ x: container.x + 16, y: container.y + 16, width: w - 32, height: container.height - 32 });
       setPhase('initial');
     } else {
       setPhase('done');
     }
-  }, [image, phase, focusOriginRect]);
+  }, [image, phase, focusOriginRect, computeTargetRect]);
+
+  useEffect(() => {
+    if (phase !== 'done' || !image?.width || !image?.height) return;
+    const recalc = () => {
+      if (!containerRef.current) return;
+      setTargetRect(computeTargetRect(containerRef.current, image.width!, image.height!));
+    };
+    window.addEventListener('resize', recalc);
+    return () => window.removeEventListener('resize', recalc);
+  }, [phase, image, computeTargetRect]);
 
   useLayoutEffect(() => {
     if (phase !== 'initial') return;
@@ -225,61 +239,67 @@ export function ImageFocus() {
   const src = `local-file://${image.original_path}`;
 
   const getImgStyle = (): React.CSSProperties => {
+    if (!targetRect) return { display: 'none' };
+
+    const base: React.CSSProperties = {
+      position: 'fixed',
+      left: targetRect.x,
+      top: targetRect.y,
+      width: targetRect.width,
+      height: targetRect.height,
+      borderRadius: '8px',
+      objectFit: 'contain',
+      zIndex: 70,
+      pointerEvents: 'none',
+    };
+
     if (phase === 'initial' && focusOriginRect) {
+      const scaleX = focusOriginRect.width / targetRect.width;
+      const scaleY = focusOriginRect.height / targetRect.height;
+      const originCX = focusOriginRect.x + focusOriginRect.width / 2;
+      const originCY = focusOriginRect.y + focusOriginRect.height / 2;
+      const targetCX = targetRect.x + targetRect.width / 2;
+      const targetCY = targetRect.y + targetRect.height / 2;
+      return { ...base, transform: `translate(${originCX - targetCX}px, ${originCY - targetCY}px) scale(${scaleX}, ${scaleY})`, opacity: 0.9 };
+    }
+    if (phase === 'animating') {
       return {
-        position: 'fixed',
-        left: focusOriginRect.x,
-        top: focusOriginRect.y,
-        width: focusOriginRect.width,
-        height: focusOriginRect.height,
-        borderRadius: '8px',
-        objectFit: 'cover',
-        zIndex: 70,
+        ...base,
+        transform: 'translate(0, 0) scale(1)',
+        transition: 'transform 350ms cubic-bezier(0.2, 0.9, 0.3, 1), opacity 350ms cubic-bezier(0.2, 0.9, 0.3, 1)',
+        opacity: 1,
       };
     }
-    if (phase === 'animating' && targetRect) {
+    if (phase === 'done') {
       return {
-        position: 'fixed',
-        left: targetRect.x,
-        top: targetRect.y,
-        width: targetRect.width,
-        height: targetRect.height,
-        transition: 'all 350ms cubic-bezier(0.2, 0.9, 0.3, 1)',
-        borderRadius: '8px',
-        objectFit: 'contain',
-        zIndex: 70,
+        ...base,
+        transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+        transition: isPanning ? 'none' : 'transform 150ms ease-out',
+        opacity: 1,
+        pointerEvents: 'auto',
       };
     }
-    if (phase === 'exit-start' && targetRect) {
-      return {
-        position: 'fixed',
-        left: targetRect.x,
-        top: targetRect.y,
-        width: targetRect.width,
-        height: targetRect.height,
-        borderRadius: '8px',
-        objectFit: 'contain',
-        zIndex: 70,
-      };
+    if (phase === 'exit-start') {
+      return { ...base, transform: 'translate(0, 0) scale(1)', opacity: 1 };
     }
     if (phase === 'exiting' && focusOriginRect) {
+      const scaleX = focusOriginRect.width / targetRect.width;
+      const scaleY = focusOriginRect.height / targetRect.height;
+      const originCX = focusOriginRect.x + focusOriginRect.width / 2;
+      const originCY = focusOriginRect.y + focusOriginRect.height / 2;
+      const targetCX = targetRect.x + targetRect.width / 2;
+      const targetCY = targetRect.y + targetRect.height / 2;
       return {
-        position: 'fixed',
-        left: focusOriginRect.x,
-        top: focusOriginRect.y,
-        width: focusOriginRect.width,
-        height: focusOriginRect.height,
-        transition: 'all 350ms cubic-bezier(0.2, 0.9, 0.3, 1)',
-        borderRadius: '8px',
-        objectFit: 'cover',
-        zIndex: 70,
+        ...base,
+        transform: `translate(${originCX - targetCX}px, ${originCY - targetCY}px) scale(${scaleX}, ${scaleY})`,
+        transition: 'transform 350ms cubic-bezier(0.2, 0.9, 0.3, 1), opacity 350ms cubic-bezier(0.2, 0.9, 0.3, 1)',
+        opacity: 0,
       };
     }
-    return {};
+    return { display: 'none' };
   };
 
   const isExiting = phase === 'exit-start' || phase === 'exiting';
-  const showOverlay = phase === 'initial' || phase === 'animating' || isExiting;
   const showBg = !isExiting;
 
   return (
@@ -315,28 +335,19 @@ export function ImageFocus() {
       )}
       <div
         ref={containerRef}
-        className={`flex-1 flex items-center justify-center p-4 overflow-hidden ${isZoomed ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
+        className={`flex-1 overflow-hidden relative ${isZoomed ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onWheel={handleWheel}
-      >
-        {phase === 'done' && (
-          <img
-            src={src}
-            alt={image.title || image.filename}
-            className="max-w-full max-h-full object-contain rounded-lg select-none"
-            draggable={false}
-            style={{
-              transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-              transition: isPanning ? 'none' : 'transform 150ms ease-out',
-            }}
-          />
-        )}
-      </div>
+      />
 
-      {phase === 'done' && (
-        <footer ref={stripAnchorRef} className="shrink-0 border-t border-gray-800 px-4 py-3 bg-gray-950">
+      <footer
+        ref={stripAnchorRef}
+        className={`shrink-0 h-[130px] border-t border-gray-800 px-4 py-2 bg-gray-950 overflow-hidden transition-all ${phase === 'animating' || phase === 'done' ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'}`}
+        style={{ transitionTimingFunction: 'cubic-bezier(0.2, 0.9, 0.3, 1)', transitionDuration: '350ms' }}
+      >
+        {(phase === 'done' || phase === 'animating') && (
           <SimilarImagesStrip
             similarityPreset={similarityPrefs}
             onSimilarityLensChange={saveSimilarityPrefsAndRefresh}
@@ -372,15 +383,15 @@ export function ImageFocus() {
             similarRefineMode={similarRefineMode}
             onSimilarRefineModeChange={setSimilarRefineMode}
           />
-        </footer>
-      )}
-      {showOverlay && (
-        <img
-          src={src}
-          alt={image.title || image.filename}
-          style={getImgStyle()}
-        />
-      )}
+        )}
+      </footer>
+      <img
+        src={src}
+        alt={image.title || image.filename}
+        className="select-none"
+        draggable={false}
+        style={getImgStyle()}
+      />
       {toast && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg shadow-xl text-sm text-gray-200 animate-fade-in">
           Copied to clipboard
