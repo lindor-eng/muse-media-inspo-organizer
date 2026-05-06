@@ -144,10 +144,22 @@ function ensureImagesHueBucketIndex(db: Database.Database): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_images_dominant_hue ON images(indexed_hue_bucket)');
 }
 
+const MIGRATIONS = [
+  `ALTER TABLE images ADD COLUMN alt_text TEXT DEFAULT ''`,
+];
+
 export function runMigrations(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
   db.exec(VECTOR_TABLE_SQL);
   ensureImagesIndexedChromatic(db);
   ensureImagesHueIndex(db);
   ensureImagesHueBucketIndex(db);
+
+  for (const migration of MIGRATIONS) {
+    try {
+      db.exec(migration);
+    } catch {
+      // Column/table already exists
+    }
+  }
 }

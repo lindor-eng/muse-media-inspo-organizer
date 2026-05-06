@@ -72,6 +72,7 @@ export interface ImageRecord {
   thumbnail_path: string | null;
   title: string;
   notes: string;
+  alt_text: string;
   source_url: string;
   rating: number;
   width: number | null;
@@ -134,6 +135,7 @@ interface AppState {
   selectedFolderId: string | null;
   selectedTagId: string | null;
   selectedImageId: string | null;
+  selectedImageIds: Set<string>;
 
   // Data
   folders: Folder[];
@@ -147,6 +149,7 @@ interface AppState {
   isImporting: boolean;
   searchQuery: string;
   isSearching: boolean;
+  isCmdHeld: boolean;
   draggingImageId: string | null;
   focusOriginRect: { x: number; y: number; width: number; height: number } | null;
   isClosingFocus: boolean;
@@ -169,6 +172,8 @@ interface AppState {
     opts?: { similarityAnchorSnapshot?: ImageRecord },
   ) => void;
   similarNavGoBack: () => void;
+  toggleImageSelection: (id: string) => void;
+  clearSelection: () => void;
   setClosingFocus: (closing: boolean) => void;
   setSearchQuery: (query: string) => void;
   executeSearch: (query: string) => Promise<void>;
@@ -193,6 +198,11 @@ interface AppState {
   restoreImage: (id: string) => Promise<void>;
   deleteImage: (id: string) => Promise<void>;
   updateImage: (id: string, data: Partial<ImageRecord>) => Promise<void>;
+  bulkTrashImages: (ids: string[]) => Promise<void>;
+  bulkDeleteImages: (ids: string[]) => Promise<void>;
+  bulkRestoreImages: (ids: string[]) => Promise<void>;
+  bulkMoveToFolder: (ids: string[], folderId: string) => Promise<void>;
+  bulkAddTag: (ids: string[], tagId: string) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -200,6 +210,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedFolderId: null,
   selectedTagId: null,
   selectedImageId: null,
+  selectedImageIds: new Set<string>(),
   folders: [],
   images: [],
   tags: [],
@@ -209,6 +220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isImporting: false,
   searchQuery: '',
   isSearching: false,
+  isCmdHeld: false,
   draggingImageId: null,
   focusOriginRect: null,
   isClosingFocus: false,
@@ -253,6 +265,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedImageId: id,
         focusOriginRect: originRect ?? null,
         isClosingFocus: false,
+        selectedImageIds: new Set<string>(),
         similarNavStack,
         ...(id === null ? { similarRefineMode: null } : {}),
         ...nextSimilar,
@@ -275,6 +288,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         similarMatchesMeta: null,
       };
     }),
+
+  toggleImageSelection: (id) => {
+    const current = new Set(get().selectedImageIds);
+    if (current.has(id)) {
+      current.delete(id);
+    } else {
+      current.add(id);
+    }
+    set({ selectedImageIds: current, selectedImageId: null });
+  },
+
+  clearSelection: () => set({ selectedImageIds: new Set<string>() }),
+
+
   setClosingFocus: (closing) => set({ isClosingFocus: closing }),
   setSearchQuery: (query) => {
     set({ searchQuery: query });
@@ -545,5 +572,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateImage: async (id, data) => {
     await api.updateImage(id, data);
     await get().loadImages();
+  },
+
+  bulkTrashImages: async (ids) => {
+    for (const id of ids) await api.trashImage(id);
+    set({ selectedImageIds: new Set<string>(), selectedImageId: null });
+    await get().refreshAll();
+  },
+
+  bulkDeleteImages: async (ids) => {
+    for (const id of ids) await api.deleteImage(id);
+    set({ selectedImageIds: new Set<string>(), selectedImageId: null });
+    await get().refreshAll();
+  },
+
+  bulkRestoreImages: async (ids) => {
+    for (const id of ids) await api.restoreImage(id);
+    set({ selectedImageIds: new Set<string>(), selectedImageId: null });
+    await get().refreshAll();
+  },
+
+  bulkMoveToFolder: async (ids, folderId) => {
+    for (const id of ids) await api.updateImage(id, { folder_id: folderId });
+    set({ selectedImageIds: new Set<string>() });
+    await get().refreshAll();
+  },
+
+  bulkAddTag: async (ids, tagId) => {
+    for (const id of ids) await api.addTagToImage(id, tagId);
+    set({ selectedImageIds: new Set<string>() });
+    await get().refreshAll();
   },
 }));

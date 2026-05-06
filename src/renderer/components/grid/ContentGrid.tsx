@@ -1,11 +1,37 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { Search, Plus, Import, Loader2 } from 'lucide-react';
 import { useAppStore } from '../../stores/app-store';
 import { ImageCard } from './ImageCard';
 
 export function ContentGrid() {
-  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus } = useAppStore();
+  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus, selectedImageIds, clearSelection } = useAppStore();
   const showToolbar = !selectedImageId || isClosingFocus;
+
+  useEffect(() => {
+    const setState = useAppStore.setState;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedImageIds.size > 0) {
+        clearSelection();
+      }
+      if (e.key === 'Meta' || e.key === 'Control') {
+        setState({ isCmdHeld: true });
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') {
+        setState({ isCmdHeld: false });
+      }
+    };
+    const handleBlur = () => setState({ isCmdHeld: false });
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [selectedImageIds, clearSelection]);
 
   const currentFolderName = viewMode === 'folder'
     ? folders.find((f) => f.id === selectedFolderId)?.name ?? 'Folder'
@@ -26,6 +52,11 @@ export function ContentGrid() {
       <header className="h-12 shrink-0 flex items-center gap-3 px-4 border-b border-gray-800">
         <h2 className="text-sm font-medium text-gray-200">{currentFolderName}</h2>
         <span className="text-xs text-gray-500">{totalImages} items</span>
+        {selectedImageIds.size > 0 && (
+          <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full">
+            {selectedImageIds.size} selected
+          </span>
+        )}
       </header>
 
       {/* Fixed top-right controls */}

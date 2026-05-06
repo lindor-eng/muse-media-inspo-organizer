@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -8,6 +8,20 @@ let sidecarProcess: ChildProcess | null = null;
 let responseResolvers: Map<string, (value: unknown) => void> = new Map();
 let requestId = 0;
 let readyPromise: Promise<boolean> | null = null;
+
+export function killStaleSidecars(): void {
+  try {
+    const result = execSync('pgrep -f embed_server.py', { encoding: 'utf-8' }).trim();
+    if (result) {
+      for (const pid of result.split('\n')) {
+        try { process.kill(parseInt(pid)); } catch {}
+      }
+      console.log('[sidecar] Killed stale processes:', result);
+    }
+  } catch {
+    // No matching processes
+  }
+}
 
 function getProjectRoot(): string {
   const appPath = app.getAppPath();

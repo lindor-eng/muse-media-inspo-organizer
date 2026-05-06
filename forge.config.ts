@@ -1,5 +1,6 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerZIP } from '@electron-forge/maker-zip';
+import { MakerDMG } from '@electron-forge/maker-dmg';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -9,10 +10,17 @@ const config: ForgeConfig = {
   packagerConfig: {
     name: 'Muse',
     asar: false,
+    extraResource: [
+      path.resolve(__dirname, 'resources/ollama'),
+    ],
   },
   rebuildConfig: {},
   makers: [
     new MakerZIP({}, ['darwin']),
+    new MakerDMG({
+      format: 'ULFO',
+      name: 'Muse',
+    }),
   ],
   hooks: {
     postPackage: async (_config, options) => {

@@ -8,6 +8,7 @@ export interface ImageRecord {
   thumbnail_path: string | null;
   title: string;
   notes: string;
+  alt_text: string;
   source_url: string;
   rating: number;
   width: number | null;
@@ -55,7 +56,7 @@ export function createImageRepo(db: Database.Database) {
   `);
 
   const updateStmt = db.prepare(`
-    UPDATE images SET title = ?, notes = ?, source_url = ?, rating = ?, folder_id = ?, updated_at = datetime('now')
+    UPDATE images SET title = ?, notes = ?, alt_text = ?, source_url = ?, rating = ?, folder_id = ?, updated_at = datetime('now')
     WHERE id = ?
   `);
 
@@ -148,11 +149,12 @@ export function createImageRepo(db: Database.Database) {
       return getByIdStmt.get(id) as ImageRecord;
     },
 
-    update(id: string, data: Partial<Pick<ImageRecord, 'title' | 'notes' | 'source_url' | 'rating' | 'folder_id'>>): ImageRecord {
+    update(id: string, data: Partial<Pick<ImageRecord, 'title' | 'notes' | 'alt_text' | 'source_url' | 'rating' | 'folder_id'>>): ImageRecord {
       const existing = getByIdStmt.get(id) as ImageRecord;
       updateStmt.run(
         data.title ?? existing.title,
         data.notes ?? existing.notes,
+        data.alt_text ?? existing.alt_text ?? '',
         data.source_url ?? existing.source_url,
         data.rating ?? existing.rating,
         data.folder_id !== undefined ? data.folder_id : existing.folder_id,
