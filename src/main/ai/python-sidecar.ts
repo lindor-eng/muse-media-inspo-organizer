@@ -8,6 +8,7 @@ let sidecarProcess: ChildProcess | null = null;
 let responseResolvers: Map<string, (value: unknown) => void> = new Map();
 let requestId = 0;
 let readyPromise: Promise<boolean> | null = null;
+let intentionalStop = false;
 
 export function killStaleSidecars(): void {
   try {
@@ -59,6 +60,9 @@ export function clipArtifactsPresent(): boolean {
 
 export function startSidecar(): Promise<boolean> {
   if (sidecarProcess && readyPromise) return readyPromise;
+  sidecarProcess = null;
+  readyPromise = null;
+  intentionalStop = false;
 
   const pythonPath = getVenvPython();
   const scriptPath = getScriptPath();
@@ -108,10 +112,14 @@ export function startSidecar(): Promise<boolean> {
       });
 
       sidecarProcess.on('exit', (code) => {
-        console.log('[sidecar] Exited with code:', code);
+        console.log('[sidecar] Exited with code:', code, intentionalStop ? '(intentional)' : '(unexpected)');
         sidecarProcess = null;
         readyPromise = null;
         responseResolvers.clear();
+        if (!intentionalStop) {
+          console.log('[sidecar] Will auto-restart on next request');
+        }
+        intentionalStop = false;
         resolveReady(false);
       });
 
@@ -128,6 +136,7 @@ export function startSidecar(): Promise<boolean> {
 
 export function stopSidecar(): void {
   if (sidecarProcess) {
+    intentionalStop = true;
     sidecarProcess.kill();
     sidecarProcess = null;
     readyPromise = null;

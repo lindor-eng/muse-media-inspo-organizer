@@ -81,15 +81,14 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         }
       }
     }
-    // Queue AI tasks in background: run LLaVA first, then CLIP (they compete for GPU memory)
+    // Queue AI tasks in background: run LLaVA first, then CLIP
     setTimeout(async () => {
       const win = BrowserWindow.getAllWindows()[0];
       const successful = results.filter((r) => r.success);
       const total = successful.length;
+      if (total === 0) return;
 
-      // Phase 1: Auto-tag with LLaVA (stop CLIP sidecar to free GPU memory)
-      stopSidecar();
-      await new Promise((r) => setTimeout(r, 2000));
+      // Phase 1: Auto-tag with LLaVA
 
       for (let i = 0; i < successful.length; i++) {
         win?.webContents.send('autotag:progress', { current: i, total, status: `Analyzing image ${i + 1} of ${total}...` });

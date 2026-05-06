@@ -95,12 +95,6 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS image_embeddings (
-    image_id    TEXT PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
-    embedding   BLOB NOT NULL,
-    created_at  TEXT DEFAULT (datetime('now'))
-);
-
 CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
     title, notes, tags_text, content=images, content_rowid=rowid
 );

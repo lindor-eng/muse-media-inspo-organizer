@@ -15,15 +15,8 @@ export function blobToFloat32Vector(buf: Buffer): Float32Array {
 
 export function upsertImageEmbedding(db: Database.Database, imageId: string, vec: number[]): void {
   const blob = embeddingVectorToBlob(vec);
-  db.prepare(
-    `
-    INSERT INTO image_embeddings (image_id, embedding)
-    VALUES (?, ?)
-    ON CONFLICT(image_id) DO UPDATE SET
-      embedding = excluded.embedding,
-      created_at = datetime('now')
-    `
-  ).run(imageId, blob);
+  db.prepare('DELETE FROM image_embeddings WHERE image_id = ?').run(imageId);
+  db.prepare('INSERT INTO image_embeddings (image_id, embedding) VALUES (?, ?)').run(imageId, blob);
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -43,13 +36,17 @@ export async function ensureImageEmbedding(db: Database.Database, imageId: strin
   if (!imagePath || !fs.existsSync(imagePath)) return false;
 
   if (!isSidecarRunning()) {
-    startSidecar();
-    await sleep(2800);
+    const ready = await startSidecar();
+    if (!ready) {
+      await sleep(1000);
+      const retryReady = await startSidecar();
+      if (!retryReady) return false;
+    }
   }
 
   let vec = await getImageEmbedding(imagePath);
   if (!vec?.length) {
-    await sleep(1500);
+    await sleep(1000);
     vec = await getImageEmbedding(imagePath);
   }
 
