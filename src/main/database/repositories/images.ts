@@ -23,6 +23,17 @@ export interface ImageRecord {
   imported_at: string;
   file_created_at: string | null;
   file_modified_at: string | null;
+  /** 0 grayscale-dominant, 1 visibly chromatic, null not classified (legacy / failed decode). */
+  indexed_chromatic: number | null;
+  /** Dominant 30° hue bin 0–11 when color is concentrated (e.g. mostly blue). */
+  indexed_hue_bucket: number | null;
+  /** Share of lit thumb pixels in the dominant bin — “how much of the image is this hue”. */
+  indexed_hue_strength: number | null;
+  /** Mean hue (°) within dominant bin; ties to `indexed_hue_bucket`. */
+  indexed_hue_degrees: number | null;
+  /** Second dominant hue bin (orange next to cobalt, etc.). */
+  indexed_hue_bucket_2: number | null;
+  indexed_hue_strength_2: number | null;
 }
 
 export interface ImageFilter {

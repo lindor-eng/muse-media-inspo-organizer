@@ -35,6 +35,14 @@ function getScriptPath(): string {
   return path.join(projectRoot, 'python', 'embed_server.py');
 }
 
+export function clipArtifactsPresent(): boolean {
+  try {
+    return fs.existsSync(getVenvPython()) && fs.existsSync(getScriptPath());
+  } catch {
+    return false;
+  }
+}
+
 export function startSidecar(): Promise<boolean> {
   if (sidecarProcess && readyPromise) return readyPromise;
 

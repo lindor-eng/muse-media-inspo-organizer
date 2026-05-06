@@ -11,7 +11,17 @@ interface TagWithMeta {
 }
 
 export function DetailPanel() {
-  const { selectedImageId, setSelectedImage, trashImage, restoreImage, deleteImage, updateImage, tags: allTags, loadTags, isClosingFocus } = useAppStore();
+  const {
+    selectedImageId,
+    setSelectedImage,
+    trashImage,
+    restoreImage,
+    deleteImage,
+    updateImage,
+    tags: allTags,
+    loadTags,
+    isClosingFocus,
+  } = useAppStore();
   const [image, setImage] = useState<ImageRecord | null>(null);
   const [colors, setColors] = useState<ImageColor[]>([]);
   const [tags, setTags] = useState<TagWithMeta[]>([]);
@@ -110,6 +120,7 @@ export function DetailPanel() {
             alt={displayImage.title}
             className="w-full rounded-lg bg-gray-800"
           />
+
         </div>
 
         {displayColors.length > 0 && (

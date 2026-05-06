@@ -5,11 +5,17 @@ import { createFolderRepo } from './database/repositories/folders';
 import { createImageRepo, type ImageFilter } from './database/repositories/images';
 import { createTagRepo } from './database/repositories/tags';
 import { importFiles } from './importer';
-import { extractAndStoreColors } from './color-extractor';
+import { extractAndStoreColors, reindexAllThumbColorIndex } from './color-extractor';
 import { isOllamaRunning } from './ai/ollama-client';
 import { autoTagImage } from './ai/auto-tagger';
 import { isSidecarRunning, startSidecar, stopSidecar } from './ai/python-sidecar';
-import { searchByText, findSimilarImages, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
+import { searchByText, findSimilarImages, findSimilarImagesWithPreviews, warmImageEmbedding, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
+import { parseSimilarRefineModes } from '../shared/similar-refine';
+import {
+  loadSimilarityPrefs,
+  saveSimilarityPrefs,
+  type SimilarityPrefs,
+} from './database/similarity-prefs';
 
 export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): void {
   const folderRepo = createFolderRepo(db);
@@ -56,6 +62,10 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   ipcMain.handle('colors:getForImage', (_, imageId: string) => {
     return db.prepare('SELECT * FROM image_colors WHERE image_id = ? ORDER BY sort_order').all(imageId);
   });
+  ipcMain.handle('colors:reindexChromaticFlags', async () => {
+    const r = await reindexAllThumbColorIndex(db);
+    return { scanned: r.scanned, updated: r.chromaticWritten };
+  });
 
   // Import
   ipcMain.handle('import:files', async (_, filePaths: string[], folderId: string | null) => {
@@ -74,11 +84,8 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     setTimeout(async () => {
       for (const result of results) {
         if (result.success) {
-          await autoTagImage(db, result.id).catch(() => {});
-          const img = imageRepo.getById(result.id);
-          if (img) {
-            await generateAndStoreEmbedding(db, result.id, img.original_path).catch(() => {});
-          }
+          await autoTagImage(db, result.id).catch(() => undefined);
+          warmImageEmbedding(db, result.id);
         }
       }
     }, 100);
@@ -102,8 +109,13 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     return searchByText(db, query);
   });
 
-  ipcMain.handle('ai:findSimilar', async (_, imageId: string) => {
-    return findSimilarImages(db, imageId);
+  ipcMain.handle('ai:findSimilar', async (_, imageId: string, opts?: unknown) => {
+    const refineModes = parseSimilarRefineModes(
+      opts && typeof opts === 'object' && opts !== null && 'refineModes' in opts
+        ? (opts as { refineModes?: unknown }).refineModes
+        : [],
+    );
+    return findSimilarImagesWithPreviews(db, imageId, { refineModes });
   });
 
   ipcMain.handle('ai:embeddingCount', () => getEmbeddingCount(db));
@@ -120,6 +132,15 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     }
     return { generated, total: allImages.length };
   });
+
+  ipcMain.handle('embeddings:hasForImage', (_, imageId: string) => {
+    const row = db.prepare('SELECT 1 FROM image_embeddings WHERE image_id = ?').get(imageId);
+    return Boolean(row);
+  });
+
+  ipcMain.handle('settings:getSimilarityPrefs', () => loadSimilarityPrefs(db));
+  ipcMain.handle('settings:setSimilarityPrefs', (_, prefs: Partial<SimilarityPrefs>) => saveSimilarityPrefs(db, prefs));
+
 
   // Clipboard
   ipcMain.handle('clipboard:copyImage', (_, filePath: string) => {

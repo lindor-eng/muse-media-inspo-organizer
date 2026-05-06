@@ -4,10 +4,11 @@ import { useAppStore } from './stores/app-store';
 import { api } from './lib/ipc';
 
 export function App() {
-  const { refreshAll, setTheme } = useAppStore();
+  const { refreshAll, setTheme, loadSimilarityPrefs } = useAppStore();
 
   useEffect(() => {
-    refreshAll();
+    void refreshAll();
+    void loadSimilarityPrefs();
     api.getTheme().then((theme: string) => setTheme(theme as 'light' | 'dark'));
     const unsubscribe = api.onThemeChange((theme: string) => setTheme(theme as 'light' | 'dark'));
 
@@ -18,7 +19,8 @@ export function App() {
       unsubscribe();
       window.removeEventListener('files-imported', handleImport);
     };
-  }, [refreshAll, setTheme]);
+    // Intentionally run once per window: similarity prefs hydrate is guarded internally; rerunning would reset lens when store action identities change across renders.
+  }, []);
 
   return <AppShell />;
 }
