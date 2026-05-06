@@ -123,6 +123,7 @@ export function ImageFocus() {
       if (!containerRef.current) return;
       setTargetRect(computeTargetRect(containerRef.current, image.width!, image.height!));
     };
+    recalc();
     window.addEventListener('resize', recalc);
     return () => window.removeEventListener('resize', recalc);
   }, [phase, image, computeTargetRect]);
@@ -199,7 +200,16 @@ export function ImageFocus() {
 
   const handleZoomChange = (newZoom: number) => {
     const clamped = Math.max(1, Math.min(5, newZoom));
-    if (clamped === 1) setPan({ x: 0, y: 0 });
+    if (clamped === 1) {
+      setPan({ x: 0, y: 0 });
+    } else if (targetRect) {
+      const maxPanX = (targetRect.width * (clamped - 1)) / 2;
+      const maxPanY = (targetRect.height * (clamped - 1)) / 2;
+      setPan({
+        x: Math.max(-maxPanX, Math.min(maxPanX, pan.x)),
+        y: Math.max(-maxPanY, Math.min(maxPanY, pan.y)),
+      });
+    }
     setZoom(clamped);
   };
 
@@ -211,10 +221,14 @@ export function ImageFocus() {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isPanning) return;
+    if (!isPanning || !targetRect) return;
     const dx = e.clientX - panStart.current.x;
     const dy = e.clientY - panStart.current.y;
-    setPan({ x: panStart.current.panX + dx, y: panStart.current.panY + dy });
+    const maxPanX = (targetRect.width * (zoom - 1)) / 2;
+    const maxPanY = (targetRect.height * (zoom - 1)) / 2;
+    const x = Math.max(-maxPanX, Math.min(maxPanX, panStart.current.panX + dx));
+    const y = Math.max(-maxPanY, Math.min(maxPanY, panStart.current.panY + dy));
+    setPan({ x, y });
   };
 
   const handleMouseUp = () => {
@@ -238,8 +252,8 @@ export function ImageFocus() {
 
   const src = `local-file://${image.original_path}`;
 
-  const getImgStyle = (): React.CSSProperties => {
-    if (!targetRect) return { display: 'none' };
+  const getOverlayStyle = (): React.CSSProperties | null => {
+    if (!targetRect) return null;
 
     const base: React.CSSProperties = {
       position: 'fixed',
@@ -270,15 +284,6 @@ export function ImageFocus() {
         opacity: 1,
       };
     }
-    if (phase === 'done') {
-      return {
-        ...base,
-        transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-        transition: isPanning ? 'none' : 'transform 150ms ease-out',
-        opacity: 1,
-        pointerEvents: 'auto',
-      };
-    }
     if (phase === 'exit-start') {
       return { ...base, transform: 'translate(0, 0) scale(1)', opacity: 1 };
     }
@@ -296,8 +301,10 @@ export function ImageFocus() {
         opacity: 0,
       };
     }
-    return { display: 'none' };
+    return null;
   };
+
+  const overlayStyle = getOverlayStyle();
 
   const isExiting = phase === 'exit-start' || phase === 'exiting';
   const showBg = !isExiting;
@@ -340,7 +347,24 @@ export function ImageFocus() {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onWheel={handleWheel}
-      />
+      >
+        {phase === 'done' && targetRect && (
+          <img
+            src={src}
+            alt={image.title || image.filename}
+            className="absolute select-none rounded-lg object-contain"
+            draggable={false}
+            style={{
+              left: targetRect.x - (containerRef.current?.getBoundingClientRect().x ?? 0),
+              top: targetRect.y - (containerRef.current?.getBoundingClientRect().y ?? 0),
+              width: targetRect.width,
+              height: targetRect.height,
+              transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+              transition: isPanning ? 'none' : 'transform 150ms ease-out',
+            }}
+          />
+        )}
+      </div>
 
       <footer
         ref={stripAnchorRef}
@@ -385,13 +409,15 @@ export function ImageFocus() {
           />
         )}
       </footer>
-      <img
-        src={src}
-        alt={image.title || image.filename}
-        className="select-none"
-        draggable={false}
-        style={getImgStyle()}
-      />
+      {overlayStyle && (
+        <img
+          src={src}
+          alt={image.title || image.filename}
+          className="select-none"
+          draggable={false}
+          style={overlayStyle}
+        />
+      )}
       {toast && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg shadow-xl text-sm text-gray-200 animate-fade-in">
           Copied to clipboard

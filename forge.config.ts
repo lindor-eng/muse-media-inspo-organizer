@@ -9,6 +9,7 @@ import { execSync } from 'node:child_process';
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Muse',
+    icon: path.resolve(__dirname, 'resources/icon'),
     asar: false,
     extraResource: [
       path.resolve(__dirname, 'resources/ollama'),
