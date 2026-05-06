@@ -72,9 +72,9 @@ export function AppShell() {
       <div className="flex-1 relative min-w-0 overflow-hidden">
         <ContentGrid />
         {selectedImageId && <ImageFocus />}
+        <EmbeddingProgress />
       </div>
       <DetailPanel />
-      <EmbeddingProgress />
       {isDragging && (
         <div className="fixed inset-0 bg-blue-500/10 border-2 border-dashed border-blue-500 z-50 flex items-center justify-center pointer-events-none">
           <div className="bg-gray-900 px-6 py-4 rounded-xl border border-blue-500 shadow-2xl">

@@ -3,6 +3,8 @@ import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { initDatabase } from './database/connection';
 import { registerIpcHandlers } from './ipc-handlers';
+import { killStaleSidecars } from './ai/python-sidecar';
+import { startOllamaServer, stopOllamaServer, isModelAvailable, pullModel, type PullProgress } from './ai/ollama-server';
 
 if (started) app.quit();
 
@@ -42,7 +44,9 @@ const createWindow = () => {
   });
 };
 
-app.on('ready', () => {
+app.on('ready', async () => {
+  killStaleSidecars();
+
   protocol.handle('local-file', (request) => {
     const filePath = decodeURIComponent(request.url.replace('local-file://', ''));
     return net.fetch(`file://${filePath}`);
@@ -51,10 +55,22 @@ app.on('ready', () => {
   const db = initDatabase();
   registerIpcHandlers(db, ipcMain);
   createWindow();
+
+  // Start managed Ollama server in background
+  try {
+    await startOllamaServer();
+    console.log('[app] Ollama server ready');
+  } catch (err) {
+    console.error('[app] Failed to start Ollama server:', err);
+  }
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  stopOllamaServer();
 });
 
 app.on('activate', () => {

@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { describeImage, parseTagsFromDescription, isOllamaRunning } from './ollama-client';
+import { analyzeImage, isOllamaRunning } from './ollama-client';
 import { createTagRepo } from '../database/repositories/tags';
 import { createImageRepo } from '../database/repositories/images';
 
@@ -15,21 +15,21 @@ export async function autoTagImage(db: Database.Database, imageId: string): Prom
   const imagePath = image.thumbnail_path || image.original_path;
 
   try {
-    const description = await describeImage(imagePath);
-    const tagNames = parseTagsFromDescription(description);
+    const analysis = await analyzeImage(imagePath);
+
+    if (analysis.altText) {
+      imageRepo.update(imageId, { alt_text: analysis.altText });
+    }
+
+    if (analysis.description && !image.notes) {
+      imageRepo.update(imageId, { notes: analysis.description });
+    }
 
     const addedTags: string[] = [];
-    for (const tagName of tagNames) {
+    for (const tagName of analysis.tags) {
       const tag = tagRepo.create(tagName);
       tagRepo.addToImage(imageId, tag.id, true, 0.8);
       addedTags.push(tagName);
-    }
-
-    if (description && !image.notes) {
-      const notesLine = description.replace(/Tags?:\s*.+/i, '').trim();
-      if (notesLine) {
-        imageRepo.update(imageId, { notes: notesLine });
-      }
     }
 
     return addedTags;

@@ -96,3 +96,6 @@ data/
 *.db
 python/.venv/
 __pycache__/
+
+# Bundled binaries
+resources/ollama

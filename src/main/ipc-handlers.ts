@@ -1,12 +1,12 @@
 import type Database from 'better-sqlite3';
 import type { IpcMain } from 'electron';
-import { nativeImage, clipboard } from 'electron';
+import { nativeImage, clipboard, BrowserWindow } from 'electron';
 import { createFolderRepo } from './database/repositories/folders';
 import { createImageRepo, type ImageFilter } from './database/repositories/images';
 import { createTagRepo } from './database/repositories/tags';
 import { importFiles } from './importer';
 import { extractAndStoreColors, reindexAllThumbColorIndex } from './color-extractor';
-import { isOllamaRunning } from './ai/ollama-client';
+import { isOllamaRunning, unloadModel } from './ai/ollama-client';
 import { autoTagImage } from './ai/auto-tagger';
 import { isSidecarRunning, startSidecar, stopSidecar } from './ai/python-sidecar';
 import { searchByText, findSimilarImages, findSimilarImagesWithPreviews, warmImageEmbedding, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
@@ -16,6 +16,7 @@ import {
   saveSimilarityPrefs,
   type SimilarityPrefs,
 } from './database/similarity-prefs';
+import { isModelAvailable, pullModel, isOllamaServerRunning } from './ai/ollama-server';
 
 export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): void {
   const folderRepo = createFolderRepo(db);
@@ -80,12 +81,31 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         }
       }
     }
-    // Queue auto-tagging and embedding generation in background (non-blocking)
+    // Queue AI tasks in background: run LLaVA first, then CLIP (they compete for GPU memory)
     setTimeout(async () => {
-      for (const result of results) {
-        if (result.success) {
-          await autoTagImage(db, result.id).catch(() => undefined);
-          warmImageEmbedding(db, result.id);
+      const win = BrowserWindow.getAllWindows()[0];
+      const successful = results.filter((r) => r.success);
+      const total = successful.length;
+
+      // Phase 1: Auto-tag with LLaVA (stop CLIP sidecar to free GPU memory)
+      stopSidecar();
+      await new Promise((r) => setTimeout(r, 2000));
+
+      for (let i = 0; i < successful.length; i++) {
+        win?.webContents.send('autotag:progress', { current: i, total, status: `Analyzing image ${i + 1} of ${total}...` });
+        await autoTagImage(db, successful[i].id).catch((err) => console.error('[import] auto-tag error:', err));
+      }
+
+      win?.webContents.send('autotag:progress', { current: total, total, status: 'Auto-tagging complete' });
+
+      // Unload LLaVA from GPU to free memory for CLIP
+      await unloadModel();
+
+      // Phase 2: Generate CLIP embeddings
+      for (const result of successful) {
+        const img = imageRepo.getById(result.id);
+        if (img) {
+          await generateAndStoreEmbedding(db, result.id, img.original_path).catch(() => {});
         }
       }
     }, 100);
@@ -147,6 +167,23 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     const img = nativeImage.createFromPath(filePath);
     if (img.isEmpty()) return false;
     clipboard.writeImage(img);
+    return true;
+  });
+
+  // Ollama model setup
+  ipcMain.handle('ollama:isServerRunning', () => isOllamaServerRunning());
+  ipcMain.handle('ollama:isModelReady', (_, model: string) => isModelAvailable(model));
+
+  ipcMain.handle('ollama:pullModel', async (_, model: string) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    await pullModel(model, (progress) => {
+      win?.webContents.send('ollama:pullProgress', {
+        model,
+        status: progress.status,
+        total: progress.total ?? 0,
+        completed: progress.completed ?? 0,
+      });
+    });
     return true;
   });
 }

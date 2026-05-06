@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { X, Star, ExternalLink, Trash2, RotateCcw, Plus } from 'lucide-react';
+import { X, Star, ExternalLink, Trash2, RotateCcw, Plus, Pencil } from 'lucide-react';
 import { useAppStore, type ImageRecord, type ImageColor } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
@@ -27,6 +27,8 @@ export function DetailPanel() {
   const [tags, setTags] = useState<TagWithMeta[]>([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
+  const [editingAlt, setEditingAlt] = useState(false);
+  const [altValue, setAltValue] = useState('');
   const [showTagInput, setShowTagInput] = useState(false);
   const [tagInputValue, setTagInputValue] = useState('');
   const tagInputRef = useRef<HTMLInputElement>(null);
@@ -80,6 +82,17 @@ export function DetailPanel() {
       lastImageRef.current = updated;
     }
     setEditingTitle(false);
+  };
+
+  const handleAltSave = () => {
+    if (!displayImage) return;
+    if (altValue.trim() !== (displayImage.alt_text || '')) {
+      updateImage(displayImage.id, { alt_text: altValue.trim() } as Partial<ImageRecord>);
+      const updated = { ...displayImage, alt_text: altValue.trim() };
+      setImage(updated);
+      lastImageRef.current = updated;
+    }
+    setEditingAlt(false);
   };
 
   const handleRating = (rating: number) => {
@@ -153,6 +166,33 @@ export function DetailPanel() {
               onClick={() => { setEditingTitle(true); setTitleValue(displayImage.title); }}
             >
               {displayImage.title || 'Untitled'}
+            </p>
+          )}
+        </div>
+
+        <div className="px-4 pb-3">
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs text-gray-500">Alt text</p>
+            <button
+              onClick={() => { setEditingAlt(true); setAltValue(displayImage.alt_text || ''); }}
+              className="p-0.5 text-gray-500 hover:text-gray-300 rounded"
+            >
+              <Pencil size={12} />
+            </button>
+          </div>
+          {editingAlt ? (
+            <textarea
+              value={altValue}
+              onChange={(e) => setAltValue(e.target.value)}
+              onBlur={handleAltSave}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAltSave(); } }}
+              autoFocus
+              rows={2}
+              className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-700 rounded text-gray-200 focus:outline-none focus:border-blue-500 resize-none"
+            />
+          ) : (
+            <p className="text-xs text-gray-400 italic">
+              {displayImage.alt_text || 'No alt text'}
             </p>
           )}
         </div>

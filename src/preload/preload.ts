@@ -62,11 +62,26 @@ const api = {
   getSimilarityPrefs: () => ipcRenderer.invoke('settings:getSimilarityPrefs'),
   setSimilarityPrefs: (prefs: unknown) => ipcRenderer.invoke('settings:setSimilarityPrefs', prefs),
 
-  // Embedding progress
+  // AI progress events
   onEmbeddingProgress: (callback: (data: { current: number; total: number; status: string }) => void) => {
     const handler = (_: unknown, data: { current: number; total: number; status: string }) => callback(data);
     ipcRenderer.on('embedding:progress', handler);
     return () => ipcRenderer.removeListener('embedding:progress', handler);
+  },
+  onAutotagProgress: (callback: (data: { current: number; total: number; status: string }) => void) => {
+    const handler = (_: unknown, data: { current: number; total: number; status: string }) => callback(data);
+    ipcRenderer.on('autotag:progress', handler);
+    return () => ipcRenderer.removeListener('autotag:progress', handler);
+  },
+
+  // Ollama model setup
+  isOllamaServerRunning: () => ipcRenderer.invoke('ollama:isServerRunning'),
+  isModelReady: (model: string) => ipcRenderer.invoke('ollama:isModelReady', model),
+  pullModel: (model: string) => ipcRenderer.invoke('ollama:pullModel', model),
+  onPullProgress: (callback: (data: { model: string; status: string; total: number; completed: number }) => void) => {
+    const handler = (_: unknown, data: { model: string; status: string; total: number; completed: number }) => callback(data);
+    ipcRenderer.on('ollama:pullProgress', handler);
+    return () => ipcRenderer.removeListener('ollama:pullProgress', handler);
   },
 
   // Get native file path from a dropped File object
