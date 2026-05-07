@@ -19,6 +19,8 @@ const api = {
   trashImage: (id: string) => ipcRenderer.invoke('images:trash', id),
   restoreImage: (id: string) => ipcRenderer.invoke('images:restore', id),
   deleteImage: (id: string) => ipcRenderer.invoke('images:delete', id),
+  restoreAllTrashed: () => ipcRenderer.invoke('images:restoreAll'),
+  emptyTrash: () => ipcRenderer.invoke('images:emptyTrash'),
   getImageCounts: () => ipcRenderer.invoke('images:getCounts'),
 
   // Tags
@@ -50,6 +52,7 @@ const api = {
   // AI
   getAIStatus: () => ipcRenderer.invoke('ai:status'),
   autoTag: (imageId: string) => ipcRenderer.invoke('ai:autoTag', imageId),
+  reanalyzeImages: (imageIds: string[]) => ipcRenderer.invoke('ai:reanalyzeImages', imageIds),
   searchByText: (query: string) => ipcRenderer.invoke('ai:searchByText', query),
   findSimilar: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
     ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),

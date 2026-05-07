@@ -150,6 +150,8 @@ interface AppState {
   searchQuery: string;
   isSearching: boolean;
   isCmdHeld: boolean;
+  /** Bumped to force DetailPanel/ImageFocus to re-fetch image metadata after a backend mutation that bypassed local state (e.g. AI re-analysis). */
+  detailRefreshNonce: number;
   draggingImageId: string | null;
   focusOriginRect: { x: number; y: number; width: number; height: number } | null;
   isClosingFocus: boolean;
@@ -218,6 +220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   counts: { total: 0, uncategorized: 0, untagged: 0, trashed: 0 },
   theme: 'dark',
   isImporting: false,
+  detailRefreshNonce: 0,
   searchQuery: '',
   isSearching: false,
   isCmdHeld: false,

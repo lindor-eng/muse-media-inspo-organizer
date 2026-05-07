@@ -5,20 +5,30 @@ import { createImageRepo } from '../database/repositories/images';
 
 export async function autoTagImage(db: Database.Database, imageId: string): Promise<string[]> {
   const running = await isOllamaRunning();
-  if (!running) return [];
+  if (!running) {
+    console.warn('[auto-tagger] Ollama not running, skipping', imageId);
+    return [];
+  }
 
   const imageRepo = createImageRepo(db);
   const tagRepo = createTagRepo(db);
   const image = imageRepo.getById(imageId);
-  if (!image) return [];
+  if (!image) {
+    console.warn('[auto-tagger] image not found', imageId);
+    return [];
+  }
 
   const imagePath = image.thumbnail_path || image.original_path;
 
   try {
     const analysis = await analyzeImage(imagePath);
+    console.log('[auto-tagger]', imageId, 'altText:', JSON.stringify(analysis.altText.slice(0, 80)));
 
     if (analysis.altText) {
-      imageRepo.update(imageId, { alt_text: analysis.altText });
+      const updated = imageRepo.update(imageId, { alt_text: analysis.altText });
+      console.log('[auto-tagger] wrote alt_text, now:', JSON.stringify((updated.alt_text || '').slice(0, 80)));
+    } else {
+      console.warn('[auto-tagger] empty altText, skipping write for', imageId);
     }
 
     if (analysis.description && !image.notes) {

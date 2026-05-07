@@ -21,6 +21,7 @@ export function DetailPanel() {
     tags: allTags,
     loadTags,
     isClosingFocus,
+    detailRefreshNonce,
   } = useAppStore();
   const [image, setImage] = useState<ImageRecord | null>(null);
   const [colors, setColors] = useState<ImageColor[]>([]);
@@ -63,7 +64,7 @@ export function DetailPanel() {
       setTags(t);
       lastTagsRef.current = t;
     });
-  }, [selectedImageId]);
+  }, [selectedImageId, detailRefreshNonce]);
 
   const handleTransitionEnd = () => {
     if (!visible) setMounted(false);

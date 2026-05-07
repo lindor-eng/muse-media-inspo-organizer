@@ -87,19 +87,49 @@ Tags: [5-10 comma-separated keyword tags for subject, style, mood, colors, mediu
   }
 
   const data: OllamaGenerateResponse = await res.json();
-  return parseAnalysis(data.response);
+  console.log('[ollama] raw response:', data.response);
+  const parsed = parseAnalysis(data.response);
+  console.log('[ollama] parsed:', { altLen: parsed.altText.length, descLen: parsed.description.length, tagCount: parsed.tags.length });
+  return parsed;
+}
+
+function cleanField(raw: string): string {
+  return raw
+    .replace(/^\**\s*/, '')        // strip leading markdown bold
+    .replace(/\**\s*$/, '')        // strip trailing markdown bold
+    .replace(/^\[|\]$/g, '')       // strip wrapping brackets
+    .replace(/^["']|["']$/g, '')   // strip wrapping quotes
+    .trim();
 }
 
 function parseAnalysis(response: string): ImageAnalysis {
-  const altMatch = response.match(/Alt:\s*(.+)/i);
-  const descMatch = response.match(/Description:\s*(.+?)(?=\nTags:|\n\n|$)/is);
-  const tagsMatch = response.match(/Tags?:\s*(.+)/i);
+  // Match "Alt:", "**Alt:**", "Alt text:", or "Alt-text:" at start of a line.
+  const altMatch = response.match(/^\s*\**\s*alt(?:[\s-]?text)?\s*:\**\s*(.+)/im);
+  const descMatch = response.match(/^\s*\**\s*description\s*:\**\s*(.+?)(?=\n\s*\**\s*tags?\s*:|\n\n|$)/ims);
+  const tagsMatch = response.match(/^\s*\**\s*tags?\s*:\**\s*(.+)/im);
 
-  const altText = altMatch?.[1]?.trim() ?? '';
-  const description = descMatch?.[1]?.trim() ?? response.split('\n')[0]?.trim() ?? '';
+  let altText = altMatch ? cleanField(altMatch[1]) : '';
+  let description = descMatch ? cleanField(descMatch[1]) : '';
   const tags = tagsMatch
-    ? tagsMatch[1].split(/[,;]+/).map((t) => t.trim().toLowerCase()).filter((t) => t.length > 1 && t.length < 30).slice(0, 10)
+    ? cleanField(tagsMatch[1])
+        .split(/[,;]+/)
+        .map((t) => t.trim().toLowerCase().replace(/^[#*-]\s*/, ''))
+        .filter((t) => t.length > 1 && t.length < 30)
+        .slice(0, 10)
     : [];
+
+  // Fallback: model emitted free-form prose with only a Tags: line. Treat everything before Tags: as description.
+  if (!description && !altText) {
+    const tagsIdx = tagsMatch ? response.search(/^\s*\**\s*tags?\s*:/im) : -1;
+    const body = tagsIdx >= 0 ? response.slice(0, tagsIdx) : response;
+    description = body.trim().replace(/\s+/g, ' ');
+  }
+
+  // Fallback: derive alt from the first sentence of the description.
+  if (!altText && description) {
+    const firstSentence = description.split(/(?<=[.!?])\s+/)[0] ?? description;
+    altText = firstSentence.slice(0, 200).trim();
+  }
 
   return { altText, description, tags };
 }

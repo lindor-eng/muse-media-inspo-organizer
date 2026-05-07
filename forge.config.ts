@@ -1,6 +1,5 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerZIP } from '@electron-forge/maker-zip';
-import { MakerDMG } from '@electron-forge/maker-dmg';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -18,10 +17,6 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   makers: [
     new MakerZIP({}, ['darwin']),
-    new MakerDMG({
-      format: 'ULFO',
-      name: 'Muse',
-    }),
   ],
   hooks: {
     postPackage: async (_config, options) => {
@@ -50,6 +45,24 @@ const config: ForgeConfig = {
         `npx @electron/rebuild --version ${electronVersion} --module-dir "${appPath}" --arch arm64`,
         { cwd: appPath, stdio: 'inherit' }
       );
+
+      // Build unsigned .pkg installer with postinstall script to remove quarantine
+      const appBundle = path.join(options.outputPaths[0], 'Muse.app');
+      const scriptsDir = path.resolve(__dirname, 'resources/scripts');
+      const outDir = path.resolve(__dirname, 'out/make');
+      fs.mkdirSync(outDir, { recursive: true });
+      const componentPkg = path.join(outDir, 'Muse-component.pkg');
+      const finalPkg = path.join(outDir, 'Muse-Installer.pkg');
+      execSync(
+        `pkgbuild --component "${appBundle}" --install-location /Applications --scripts "${scriptsDir}" "${componentPkg}"`,
+        { stdio: 'inherit' }
+      );
+      execSync(
+        `productbuild --package "${componentPkg}" "${finalPkg}"`,
+        { stdio: 'inherit' }
+      );
+      fs.unlinkSync(componentPkg);
+      console.log(`[pkg] Built installer: ${finalPkg}`);
     },
   },
   plugins: [

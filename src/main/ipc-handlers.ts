@@ -43,6 +43,16 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   ipcMain.handle('images:trash', (_, id: string) => imageRepo.trash(id));
   ipcMain.handle('images:restore', (_, id: string) => imageRepo.restore(id));
   ipcMain.handle('images:delete', (_, id: string) => imageRepo.deletePermanently(id));
+  ipcMain.handle('images:restoreAll', () => {
+    const trashed = db.prepare('SELECT id FROM images WHERE is_trashed = 1').all() as { id: string }[];
+    for (const row of trashed) imageRepo.restore(row.id);
+    return trashed.length;
+  });
+  ipcMain.handle('images:emptyTrash', () => {
+    const trashed = db.prepare('SELECT id FROM images WHERE is_trashed = 1').all() as { id: string }[];
+    for (const row of trashed) imageRepo.deletePermanently(row.id);
+    return trashed.length;
+  });
   ipcMain.handle('images:getCounts', () => ({
     total: imageRepo.getTotalCount(),
     uncategorized: imageRepo.getUncategorizedCount(),
@@ -119,6 +129,31 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
 
   ipcMain.handle('ai:autoTag', async (_, imageId: string) => {
     return autoTagImage(db, imageId);
+  });
+
+  ipcMain.handle('ai:reanalyzeImages', async (_, imageIds: string[]) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const total = imageIds.length;
+    let processed = 0;
+    for (let i = 0; i < imageIds.length; i++) {
+      win?.webContents.send('autotag:progress', {
+        current: i,
+        total,
+        status: total > 1 ? `Re-analyzing ${i + 1} of ${total}...` : 'Re-analyzing image...',
+      });
+      try {
+        await autoTagImage(db, imageIds[i]);
+        processed++;
+      } catch (err) {
+        console.error('[reanalyze] error for', imageIds[i], err);
+      }
+    }
+    win?.webContents.send('autotag:progress', {
+      current: total,
+      total,
+      status: 'Re-analysis complete',
+    });
+    return { processed, total };
   });
 
   ipcMain.handle('ai:startSidecar', () => startSidecar());

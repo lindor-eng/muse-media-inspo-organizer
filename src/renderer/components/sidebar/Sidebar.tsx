@@ -10,20 +10,25 @@ export function Sidebar() {
   const [newFolderName, setNewFolderName] = useState('');
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
+  const [trashContextMenu, setTrashContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const trashContextMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!contextMenu) return;
+    if (!contextMenu && !trashContextMenu) return;
     const handleClick = (e: MouseEvent) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
         setContextMenu(null);
       }
+      if (trashContextMenuRef.current && !trashContextMenuRef.current.contains(e.target as Node)) {
+        setTrashContextMenu(null);
+      }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [contextMenu]);
+  }, [contextMenu, trashContextMenu]);
 
   const handleRenameFolder = async () => {
     if (renamingFolderId && renameValue.trim()) {
@@ -180,6 +185,10 @@ export function Sidebar() {
           className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors
             ${viewMode === 'trash' ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-white/5'}`}
           onClick={() => setViewMode('trash')}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setTrashContextMenu({ x: e.clientX, y: e.clientY });
+          }}
         >
           <Trash2 size={14} />
           <span className="flex-1 text-left">Trash</span>
@@ -271,6 +280,34 @@ export function Sidebar() {
           >
             <Trash size={12} />
             Delete
+          </button>
+        </div>
+      )}
+      {trashContextMenu && (
+        <div
+          ref={trashContextMenuRef}
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]"
+          style={{ left: trashContextMenu.x, top: trashContextMenu.y }}
+        >
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            onClick={async () => {
+              await api.restoreAllTrashed();
+              refreshAll();
+              setTrashContextMenu(null);
+            }}
+          >
+            Restore All
+          </button>
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+            onClick={async () => {
+              await api.emptyTrash();
+              refreshAll();
+              setTrashContextMenu(null);
+            }}
+          >
+            Empty Trash
           </button>
         </div>
       )}

@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
-import { FolderOpen, Tag, Trash2, Plus, RotateCcw } from 'lucide-react';
+import { FolderOpen, Tag, Trash2, Plus, RotateCcw, Sparkles } from 'lucide-react';
 import { useAppStore, type ImageRecord } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
@@ -115,6 +115,19 @@ export function ImageCard({ image }: Props) {
     setContextMenu(null);
     setSubMenu(null);
     targetIds.length > 1 ? bulkRestoreImages(targetIds) : useAppStore.getState().restoreImage(image.id);
+  };
+
+  const handleReanalyze = async () => {
+    setContextMenu(null);
+    setSubMenu(null);
+    const ids = targetIds;
+    await api.reanalyzeImages(ids);
+    if (ids.length > 1) {
+      useAppStore.setState({ selectedImageIds: new Set<string>() });
+    }
+    await refreshAll();
+    await loadTags();
+    useAppStore.setState((s) => ({ detailRefreshNonce: s.detailRefreshNonce + 1 }));
   };
 
   const handleClick = (e: React.MouseEvent) => {
@@ -243,6 +256,16 @@ export function ImageCard({ image }: Props) {
                 ))
               )}
             </div>
+          )}
+
+          {!image.is_trashed && (
+            <button
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+              onClick={handleReanalyze}
+            >
+              <Sparkles size={12} />
+              {showBulkLabel ? `Re-analyze ${selectionCount} images` : 'Re-analyze'}
+            </button>
           )}
 
           <div className="border-t border-gray-700 mt-1 pt-1">

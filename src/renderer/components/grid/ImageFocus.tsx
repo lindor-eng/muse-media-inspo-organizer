@@ -25,6 +25,7 @@ export function ImageFocus() {
     similarNavGoBack,
     similarRefineMode,
     setSimilarRefineMode,
+    detailRefreshNonce,
   } = useAppStore();
   const [clipSidecar, setClipSidecar] = useState<boolean | null>(null);
   const [image, setImage] = useState<ImageRecord | null>(null);
@@ -47,7 +48,7 @@ export function ImageFocus() {
     if (selectedImageId) {
       api.getImage(selectedImageId).then(setImage);
     }
-  }, [selectedImageId]);
+  }, [selectedImageId, detailRefreshNonce]);
 
   useEffect(() => {
     if (!selectedImageId) {
