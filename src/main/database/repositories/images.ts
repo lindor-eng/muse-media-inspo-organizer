@@ -35,6 +35,8 @@ export interface ImageRecord {
   /** Second dominant hue bin (orange next to cobalt, etc.). */
   indexed_hue_bucket_2: number | null;
   indexed_hue_strength_2: number | null;
+  /** 8-byte average-hash perceptual hash for visual near-duplicate / pHash similarity scoring. */
+  phash: Buffer | null;
 }
 
 export interface ImageFilter {
@@ -161,6 +163,10 @@ export function createImageRepo(db: Database.Database) {
         id
       );
       return getByIdStmt.get(id) as ImageRecord;
+    },
+
+    setPhash(id: string, phash: Buffer): void {
+      db.prepare('UPDATE images SET phash = ?, updated_at = datetime(\'now\') WHERE id = ?').run(phash, id);
     },
 
     trash(id: string): void {

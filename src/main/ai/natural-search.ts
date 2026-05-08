@@ -1,8 +1,8 @@
 import type Database from 'better-sqlite3';
-import { BrowserWindow } from 'electron';
-import { getTextEmbedding, getImageEmbedding, isSidecarRunning, startSidecar, clipArtifactsPresent } from './python-sidecar';
 import { createImageRepo, type ImageRecord as DbImageRecord } from '../database/repositories/images';
-import { blobToFloat32Vector, ensureImageEmbedding, upsertImageEmbedding } from './embeddings';
+import { blobToFloat32Vector, ensureImageEmbedding, embedAndStoreForImage, l2Normalize } from './embeddings';
+import { embedText, isOllamaRunning } from './ollama-client';
+import { phashSimilarity, phashHamming, blobToPhash, computePHash, phashToBlob } from './phash';
 import { likenessDisplayPercentRounded } from '../../shared/visual-similarity';
 import { dominantHueAxisMultiplier, dualDominantHueBoost, hueBinRingSteps } from '../../shared/image-color-index';
 import { persistThumbColorIndex } from '../color-extractor';
@@ -41,7 +41,7 @@ export interface VisualSimilarItem {
 
 export interface SimilarMatchesResponse {
   matches: VisualSimilarItem[];
-  emptyHint?: 'python_venv_missing' | 'clip_embed_failed' | 'needs_other_indexed_images' | 'similarity_below_threshold';
+  emptyHint?: 'ollama_unavailable' | 'embedding_failed' | 'needs_other_indexed_images' | 'similarity_below_threshold';
   meta?: {
     sourceHadEmbeddingBefore: boolean;
     peerCandidatesWithEmbedding: number;
@@ -56,430 +56,99 @@ export interface FindSimilarOptions {
   refineModes?: SimilarRefineMode[];
 }
 
-const CLIP_PROMPT_LAYOUT =
-  'similar photographic composition framing and layout viewpoint';
-const CLIP_PROMPT_FORMAT =
-  'same graphic format product screenshot poster webpage typography';
-/** Saturated hue / vivid palette text cue (weighted down when focal is near-grayscale). */
-const CLIP_PROMPT_COLORS_VIVID =
-  'harmonious color palette matching dominant hues saturation vividness and overall chromatic mood';
+/** Score weights when combining caption embedding cosine, pHash similarity, and palette overlap. */
+const W_CAPTION = 0.6;
+const W_PHASH = 0.15;
+const W_COLOR_BASELINE = 0.25;
+/** When refine=colors is active, palette dominates. */
+const W_COLOR_REFINE = 0.7;
+const W_CAPTION_REFINE = 0.25;
+const W_PHASH_REFINE = 0.05;
 
-/** Matches muted, grayscale, or low-chroma aesthetics so B&W focal images are not dragged toward saturated neighbors. */
-const CLIP_PROMPT_COLORS_NEUTRAL =
-  'black and white photograph flat graphic typography minimal color monochrome gray tones no rainbow hues';
-
-const CLIP_PROMPT_COLORS_ACHROME =
-  'absence of saturated color photographic grayscale line art schematic flat achromatic imagery';
-
-/** Image–image CLIP likeness stays as `similarity` on outputs; fused score only selects order. */
-const W_FUSE_IMG = 1;
-const W_FUSE_MODE = 0.62;
-/**
- * Palette effective chroma at or below this ⇒ treat focal as monochrome: almost no vivid text probe,
- * and Vibrant-distance is down-weighted toward saturated neighbours (they often still share blacks/grays).
- */
-const FOCAL_MONOCHROME_MAX_CHROMA = 0.11;
-
-/** Max NN candidates inspected when fusion is active */
-const REFINE_POOL_CAP = 520;
-
-/** Min symmetric palette similarity to keep when “Similar colors” is on (measurable palette only). */
+/** Min symmetric palette overlap to keep when refine=colors. */
 const PALETTE_COMPOSITION_GATE = 0.42;
-/**
- * If symmetric Vibrant score is below the gate but the embedding is still this close (CLIP dot, −1…1),
- * keep the candidate — common for two-panel posters where one-way swatch overlap is high and the other isn’t.
- */
-const SIMILAR_COLORS_PALETTE_GATE_BYPASS_EMBED_MIN = 0.59;
-/** When only Similar colors + we have palettes: likeness rank is dominated by palette (not structural CLIP similarity). */
-const PALETTE_DOMINANT_CLIP = 0.18;
-const PALETTE_DOMINANT_PAL = 0.82;
+const FOCAL_MONOCHROME_MAX_CHROMA = 0.11;
+const REFINE_POOL_CAP = 520;
 
 type PaletteRow = { hex_color: string; percentage: number };
 
 function hexToRgb(hexRaw: string): { r: number; g: number; b: number } | null {
   const cleaned = hexRaw.trim().replace(/^#/, '').replace(/^0x/i, '');
-  const hex = cleaned.length >= 8 ? cleaned.slice(0, 6) : cleaned.slice(0, 6).padEnd(6, '0');
-  if (hex.length !== 6 || !/^[0-9a-f]{6}$/i.test(hex)) return null;
-  return {
-    r: parseInt(hex.slice(0, 2), 16),
-    g: parseInt(hex.slice(2, 4), 16),
-    b: parseInt(hex.slice(4, 6), 16),
-  };
+  if (cleaned.length !== 6) return null;
+  const n = parseInt(cleaned, 16);
+  if (Number.isNaN(n)) return null;
+  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
 }
 
-/** Normalized Euclidean distance squared in [0, 1]: 0 identical, ~1 extremes on opposite corners. */
 function rgbDistNorm(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
   const dr = (a.r - b.r) / 255;
   const dg = (a.g - b.g) / 255;
   const db = (a.b - b.b) / 255;
-  return (dr * dr + dg * dg + db * db) / 3;
+  const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+  return Math.min(1, dist / Math.sqrt(3));
 }
 
-/** Normalize rows to weighted LAB-like distance proxy in [0,1] per swatch. */
 function directionalPaletteOverlap(from: PaletteRow[], to: PaletteRow[]): number | null {
-  type W = { rgb: { r: number; g: number; b: number }; w: number };
-
-  const parse = (rows: PaletteRow[]): W[] => {
-    const parsed: W[] = [];
-    let sum = 0;
-    for (const row of rows.slice(0, 16)) {
-      const rgb = hexToRgb(row.hex_color);
-      if (!rgb) continue;
-      const w = Math.max(1e-4, Number(row.percentage));
-      parsed.push({ rgb, w });
-      sum += w;
+  if (from.length === 0 || to.length === 0) return null;
+  const toRgbs = to.map((r) => ({ rgb: hexToRgb(r.hex_color), pct: r.percentage })).filter((x): x is { rgb: { r: number; g: number; b: number }; pct: number } => x.rgb !== null);
+  if (toRgbs.length === 0) return null;
+  let weighted = 0;
+  let totalWeight = 0;
+  for (const f of from) {
+    const fromRgb = hexToRgb(f.hex_color);
+    if (!fromRgb) continue;
+    let bestMatch = 0;
+    for (const t of toRgbs) {
+      const sim = 1 - rgbDistNorm(fromRgb, t.rgb);
+      if (sim > bestMatch) bestMatch = sim;
     }
-    if (parsed.length === 0 || sum <= 0) return [];
-    return parsed.map((p) => ({ rgb: p.rgb, w: p.w / sum }));
-  };
-
-  const a = parse(from);
-  const b = parse(to);
-  if (a.length === 0 || b.length === 0) return null;
-
-  let agg = 0;
-  let wsum = 0;
-  for (const pa of a) {
-    let best = 1;
-    for (const pb of b) {
-      best = Math.min(best, rgbDistNorm(pa.rgb, pb.rgb));
-    }
-    agg += pa.w * best;
-    wsum += pa.w;
+    weighted += bestMatch * f.percentage;
+    totalWeight += f.percentage;
   }
-  if (wsum <= 0) return null;
-  /** Penalise mean distance; sqrt keeps mid-range discriminative vs black/blue vs beige. */
-  return Math.max(0, Math.min(1, 1 - Math.min(1, Math.sqrt((agg / wsum) * 2))));
+  if (totalWeight <= 0) return null;
+  return weighted / totalWeight;
 }
 
-/** Both directions averaged — “overall palette composition” vs biasing dominant source hues only. */
-function paletteCompositionForSimilarColors(
-  swA: PaletteRow[],
-  swB: PaletteRow[],
-): { symmetric: number | null; boosted: number | null; ab: number | null; ba: number | null } {
-  const ab = directionalPaletteOverlap(swA, swB);
-  const ba = directionalPaletteOverlap(swB, swA);
-  if (ab == null || ba == null) {
-    const single = ab ?? ba ?? null;
-    return { symmetric: single, boosted: single, ab, ba };
-  }
-  const mean = (ab + ba) / 2;
-  const hi = Math.max(ab, ba);
-  const lo = Math.min(ab, ba);
-  if (lo < 0.31 && hi > 0.44) return { symmetric: mean, boosted: Math.max(mean, hi * 0.94), ab, ba };
-  return { symmetric: mean, boosted: mean, ab, ba };
+function symmetricPaletteOverlap(a: PaletteRow[], b: PaletteRow[]): number | null {
+  const ab = directionalPaletteOverlap(a, b);
+  const ba = directionalPaletteOverlap(b, a);
+  if (ab == null || ba == null) return null;
+  return Math.min(ab, ba);
 }
 
-/** Simple RGB chroma proxy in ~[0,1] aligned with perceptual saturation of a flat swatch. */
 function rgbChromaticity(rgb: { r: number; g: number; b: number }): number {
-  const mx = Math.max(rgb.r, rgb.g, rgb.b);
-  const mn = Math.min(rgb.r, rgb.g, rgb.b);
-  return (mx - mn) / 255;
+  const max = Math.max(rgb.r, rgb.g, rgb.b);
+  const min = Math.min(rgb.r, rgb.g, rgb.b);
+  if (max === 0) return 0;
+  return (max - min) / max;
 }
 
-/** Weighted mean chromaticity across Vibrant swatches; `null` if no usable rows. */
 function weightedPaletteChroma(rows: PaletteRow[]): number | null {
-  let wsum = 0;
-  let acc = 0;
-  for (const row of rows.slice(0, 16)) {
-    const rgb = hexToRgb(row.hex_color);
+  if (rows.length === 0) return null;
+  let chrom = 0;
+  let weight = 0;
+  for (const r of rows) {
+    const rgb = hexToRgb(r.hex_color);
     if (!rgb) continue;
-    const w = Math.max(1e-4, Number(row.percentage));
-    wsum += w;
-    acc += w * rgbChromaticity(rgb);
+    chrom += rgbChromaticity(rgb) * r.percentage;
+    weight += r.percentage;
   }
-  if (wsum <= 0) return null;
-  return Math.max(0, Math.min(1, acc / wsum));
+  if (weight <= 0) return null;
+  return chrom / weight;
 }
 
-/** Robust to Vibrant outliers: weighted median chromaticity (~0 on most B&W palettes). */
-function paletteMedianWeightedChroma(rows: PaletteRow[]): number | null {
-  type CW = { c: number; w: number };
-  const buckets: CW[] = [];
-  let wsum = 0;
-  for (const row of rows.slice(0, 16)) {
-    const rgb = hexToRgb(row.hex_color);
-    if (!rgb) continue;
-    const w = Math.max(1e-4, Number(row.percentage));
-    buckets.push({ c: rgbChromaticity(rgb), w });
-    wsum += w;
-  }
-  if (buckets.length === 0 || wsum <= 0) return null;
-  buckets.sort((a, b) => a.c - b.c);
-  const mid = wsum / 2;
-  let cum = 0;
-  for (const b of buckets) {
-    cum += b.w;
-    if (cum >= mid) return Math.max(0, Math.min(1, b.c));
-  }
-  return Math.max(0, Math.min(1, buckets[buckets.length - 1]!.c));
+/** Cosine similarity of L2-normalized vectors equals dot product. */
+function dotNormalized(a: Float32Array, b: Float32Array): number {
+  const n = a.length;
+  if (b.length !== n) return NaN;
+  let s = 0;
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s;
 }
 
-/** Highest chromaticity among swatches accounting for meaningful weight (drops micro-outliers below 2.5%). */
-function paletteDominantPeakChroma(rows: PaletteRow[]): number | null {
-  let raw = 0;
-  for (const row of rows.slice(0, 16)) {
-    const rgb = hexToRgb(row.hex_color);
-    if (!rgb) continue;
-    raw += Math.max(1e-4, Number(row.percentage));
-  }
-  if (raw <= 0) return null;
-  let peak = 0;
-  for (const row of rows.slice(0, 16)) {
-    const rgb = hexToRgb(row.hex_color);
-    if (!rgb) continue;
-    const w = Number(row.percentage) / raw;
-    if (!(w >= 0.025)) continue;
-    peak = Math.max(peak, rgbChromaticity(rgb));
-  }
-  if (peak === 0 && rows.length > 0) return weightedPaletteChroma(rows);
-  return peak > 0 ? Math.max(0, Math.min(1, peak)) : null;
-}
-
-/** How strongly the focal embedding aligns with the vivid text vs grayscale prompts (fallback when palettes lie). */
-function vividWeightFromEmbeddingVsPrompts(
-  queryVec: Float32Array,
-  vividVec: Float32Array | null,
-  neutralVec: Float32Array | null,
-  achromeVec: Float32Array | null,
-): number {
-  if (!vividVec || !neutralVec) return 0.5;
-  const v = normCosine(dotNormalized(vividVec, queryVec));
-  const ach = achromeVec != null ? normCosine(dotNormalized(achromeVec, queryVec)) : null;
-  const n = normCosine(dotNormalized(neutralVec, queryVec));
-  const calm = Math.max(n, ach ?? n);
-  return Math.max(0, Math.min(1, v / (v + calm + 1e-6)));
-}
-
-/** Palette-derived vivid weight once `effectiveChroma = min(median, peak-or-median)` resolved. */
-function vividWeightFromEffectiveChroma(effect: number): number {
-  if (effect <= 0.055) return 0;
-  return Math.max(0, Math.min(1, (effect - 0.055) / 0.34));
-}
-
-/** Final λ blending vivid vs calm CLIP probes. `λEmb` = vivid / (vivid+calm) on the focal thumbnail. */
-function blendVividClipLambda(λEmb: number, paletteEff: number | null): number {
-  if (paletteEff !== null && paletteEff <= FOCAL_MONOCHROME_MAX_CHROMA) {
-    return Math.min(λEmb * 0.068, 0.052);
-  }
-  if (paletteEff === null) {
-    return Math.min(λEmb * 0.27 + 0.068, 0.19);
-  }
-  const λPal = vividWeightFromEffectiveChroma(paletteEff);
-  return Math.max(0, Math.min(1, λPal * 0.46 + λEmb * 0.54));
-}
-
-/** Estimate candidate saturation when swatches absent; amplifies vivid–calm spread. */
-function candChromaSurrogateClip(vividS: number | null, calmS: number | null): number | null {
-  if (vividS == null || calmS == null) return null;
-  return Math.max(0, Math.min(1, 0.17 + vividS - calmS));
-}
-
-/** Harmony [0,1] between focal and candidate chroma fingerprints. */
-function chromaAgreementFactor(src: number | null, cand: number | null): number {
-  if (src === null || cand === null) return 1;
-  const d = Math.abs(src - cand);
-  return Math.max(0, Math.min(1, 1 - d * d * 2.52));
-}
-
-/** When focal chroma is tiny, exponentially down-rank candidates with higher saturation. */
-function achromaticPenalty(focalMedian: number, candChrom: number): number {
-  if (focalMedian > FOCAL_MONOCHROME_MAX_CHROMA + 0.01) return 1;
-  const d = Math.max(0, candChrom - focalMedian);
-  const k = focalMedian < 0.06 ? 4.95 : 4.05;
-  return Math.max(0.03, Math.min(1, Math.exp(-d * k)));
-}
-
-/** When thumb-time classification exists, soften cross-type matches in Similar colors (unknown stays neutral). */
-function indexedChromaticAgreement(focal: number | null | undefined, cand: number | null | undefined): number {
-  const f = focal === 0 ? 0 : focal === 1 ? 1 : null;
-  const c = cand === 0 ? 0 : cand === 1 ? 1 : null;
-  if (f === null || c === null) return 1;
-  if (f === 0 && c === 1) return 0.098;
-  if (f === 1 && c === 0) return 0.38;
-  return 1;
-}
-
-/** Quick palette sniff when `indexed_chromatic` missing; tuned to avoid wrongly blocking true B&W thumbs. */
-const PALETTE_GATE_CHROMATIC_UPPER = 0.105;
-const PALETTE_GATE_ACHROME_UPPER = 0.068;
-
-/** True ⇒ drop from pool (“Similar colors” on a monochrome focal should not promote rainbow neighbors). */
-async function chromaticNeighborSkipForAchromaticSimilarColors(
-  db: Database.Database,
-  cand: DbImageRecord,
-  paletteChromStmt: { all: (...args: unknown[]) => unknown[] },
-): Promise<boolean> {
-  if (cand.indexed_chromatic === 1) return true;
-  if (cand.indexed_chromatic === 0) return false;
-  const cp = paletteChromStmt.all(cand.id) as PaletteRow[];
-  const pc = weightedPaletteChroma(cp);
-  if (pc !== null && pc >= PALETTE_GATE_CHROMATIC_UPPER) return true;
-  if (pc !== null && pc <= PALETTE_GATE_ACHROME_UPPER) return false;
-  const c = await persistThumbColorIndex(db, cand.id, cand.thumbnail_path);
-  return c?.chromatic === 1;
-}
-
-function coarseMime(ft: string | null): string {
-  if (!ft) return 'unknown';
-  const s = ft.toLowerCase();
-  if (/jpe?g/.test(s)) return 'jpeg';
-  if (/png/.test(s)) return 'png';
-  if (/webp/.test(s)) return 'webp';
-  if (/gif/.test(s)) return 'gif';
-  if (/svg/.test(s)) return 'svg';
-  if (/pdf/.test(s)) return 'pdf';
-  return 'other';
-}
-
-function orientationBucket(ar: number): 'portrait' | 'landscape' | 'squarish' {
-  if (ar < 0.88) return 'portrait';
-  if (ar > 1.15) return 'landscape';
-  return 'squarish';
-}
-
-/** Overlap score for aspect similarity in (0 1]; `null` if dimensions missing on either row. */
-function aspectOverlapScore(
-  ws: number | null,
-  hs: number | null,
-  wc: number | null,
-  hc: number | null,
-): number | null {
-  if (!ws || !hs || !wc || !hc || ws <= 0 || hs <= 0 || wc <= 0 || hc <= 0) return null;
-  const rs = ws / hs;
-  const rc = wc / hc;
-  const d = Math.abs(Math.log(rs) - Math.log(rc));
-  const k = 9;
-  return 1 / (1 + k * d);
-}
-
-function metadataFormatAgreement(src: DbImageRecord, cand: DbImageRecord): number {
-  const mimeS = coarseMime(src.file_type);
-  const mimeC = coarseMime(cand.file_type);
-  const mimeBonus = mimeS !== 'unknown' && mimeS === mimeC ? 1 : mimeS !== 'unknown' && mimeC !== 'unknown' ? 0.55 : 0.72;
-
-  const asp = aspectOverlapScore(src.width, src.height, cand.width, cand.height);
-  if (asp !== null) {
-    const sw = src.width;
-    const sh = src.height;
-    const cw = cand.width;
-    const ch = cand.height;
-    if (sw !== null && sh !== null && cw !== null && ch !== null && sh > 0 && ch > 0) {
-      const bs = orientationBucket(sw / sh);
-      const bc = orientationBucket(cw / ch);
-      const orient = bs === bc ? 1 : 0.5;
-      return 0.5 * mimeBonus + 0.35 * asp + 0.15 * orient;
-    }
-  }
-  return mimeBonus;
-}
-
+/** Map dot product on normalized vectors (-1..1) → 0..1 likeness. */
 function normCosine(dot: number): number {
   return Math.max(0, Math.min(1, (dot + 1) / 2));
-}
-
-async function waitSidecarTick(): Promise<void> {
-  await new Promise<void>((r) => setImmediate(r));
-  await new Promise<void>((r) => setTimeout(r, 380));
-}
-
-async function loadRefinePromptVectors(
-  modes: SimilarRefineMode[],
-  cache: Map<string, Float32Array | null>,
-): Promise<void> {
-  const needLayout = modes.includes('layout');
-  const needFormat = modes.includes('format');
-  const needColors = modes.includes('colors');
-  if (!needLayout && !needFormat && !needColors) return;
-  if (!clipArtifactsPresent()) return;
-
-  if (!isSidecarRunning()) {
-    if (!startSidecar()) return;
-    await waitSidecarTick();
-  }
-  if (!isSidecarRunning()) return;
-
-  const prompts: string[] = [];
-  if (needLayout) prompts.push(CLIP_PROMPT_LAYOUT);
-  if (needFormat) prompts.push(CLIP_PROMPT_FORMAT);
-  if (needColors) {
-    prompts.push(CLIP_PROMPT_COLORS_VIVID);
-    prompts.push(CLIP_PROMPT_COLORS_NEUTRAL);
-    prompts.push(CLIP_PROMPT_COLORS_ACHROME);
-  }
-
-  for (const prompt of prompts) {
-    if (cache.has(prompt)) continue;
-    const raw = await getTextEmbedding(prompt);
-    cache.set(prompt, raw?.length ? Float32Array.from(raw) : null);
-  }
-}
-
-function fuseRankScore(
-  modeSet: Set<SimilarRefineMode>,
-  imgNorm: number,
-  paletteScore: number | null,
-  layoutComposite: number | null,
-  formatComposite: number | null,
-): number {
-  const colorsChipOnlyDom = modeSet.has('colors') && paletteScore !== null && modeSet.size === 1;
-  if (colorsChipOnlyDom) {
-    return PALETTE_DOMINANT_CLIP * imgNorm + PALETTE_DOMINANT_PAL * paletteScore;
-  }
-
-  let num = W_FUSE_IMG * imgNorm;
-  let den = W_FUSE_IMG;
-  if (modeSet.has('colors') && paletteScore != null) {
-    num += W_FUSE_MODE * paletteScore;
-    den += W_FUSE_MODE;
-  }
-  if (modeSet.has('layout') && layoutComposite != null) {
-    num += W_FUSE_MODE * layoutComposite;
-    den += W_FUSE_MODE;
-  }
-  if (modeSet.has('format') && formatComposite != null) {
-    num += W_FUSE_MODE * formatComposite;
-    den += W_FUSE_MODE;
-  }
-  let fused = den > 1e-9 ? num / den : imgNorm;
-
-  /** Legacy: multi-mode fusion could penalise weak palettes; radio UI sends at most one chip. */
-  if (modeSet.has('colors') && paletteScore != null && !colorsChipOnlyDom && modeSet.size > 1) {
-    fused *= Math.max(0.05, 0.28 + 0.72 * paletteScore);
-  }
-  return fused;
-}
-
-interface RefinedScoredRow {
-  fused: number;
-  similarity: number;
-  layoutComposite: number | null;
-  formatComposite: number | null;
-  paletteScore: number | null;
-  item: VisualSimilarItem;
-}
-
-/** Single active refine chip: layout/format sort by facet; colors prioritizes fused (palette + CLIP hue) within the pool. */
-function refinedSortCmp(a: RefinedScoredRow, b: RefinedScoredRow, soleMode: SimilarRefineMode): number {
-  const facetRank = (x: number | null): number =>
-    x != null && Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : -1;
-
-  if (soleMode === 'colors') {
-    const df = b.fused - a.fused;
-    if (df !== 0) return df;
-    return b.similarity - a.similarity;
-  }
-  if (soleMode === 'layout') {
-    const df = facetRank(b.layoutComposite) - facetRank(a.layoutComposite);
-    if (df !== 0) return df;
-    return b.similarity - a.similarity;
-  }
-  if (soleMode === 'format') {
-    const df = facetRank(b.formatComposite) - facetRank(a.formatComposite);
-    if (df !== 0) return df;
-    return b.similarity - a.similarity;
-  }
-  return b.similarity - a.similarity;
 }
 
 function previewFromRecord(r: DbImageRecord | undefined): VisualSimilarItem['image'] | null {
@@ -505,46 +174,6 @@ function previewFromRecord(r: DbImageRecord | undefined): VisualSimilarItem['ima
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
-/** Cosine similarity of L2-normalized vectors equals dot product. */
-function dotNormalized(a: Float32Array, b: Float32Array): number {
-  const n = a.length;
-  if (b.length !== n) return NaN;
-  let s = 0;
-  for (let i = 0; i < n; i++) s += a[i] * b[i];
-  return s;
-}
-
-/**
- * Color-prompt alignment with the embedding component of `cand` that is orthogonal to `query`.
- * Top CLIP NN neighbors hug the focal direction so dot(prompt,cand) ≈ dot(prompt,query)—flat signal;
- * orthogonal residual supplies per-neighbour variance needed to re-rank.
- */
-function clipColorChordScore(prompt: Float32Array, cand: Float32Array, query: Float32Array): number | null {
-  const cosQC = dotNormalized(query, cand);
-  if (!Number.isFinite(cosQC)) return null;
-  let magSq = 0;
-  const n = cand.length;
-  for (let i = 0; i < n; i++) {
-    const r = cand[i] - cosQC * query[i];
-    magSq += r * r;
-  }
-  const mag = Math.sqrt(magSq);
-  if (!(mag >= 1e-5 && Number.isFinite(mag))) return null;
-  let dotP = 0;
-  for (let i = 0; i < n; i++) {
-    dotP += prompt[i] * ((cand[i] - cosQC * query[i]) / mag);
-  }
-  return normCosine(dotP);
-}
-
-function clipColorHybridScore(prompt: Float32Array, cand: Float32Array, query: Float32Array): number | null {
-  const chord = clipColorChordScore(prompt, cand, query);
-  const plain = dotNormalized(prompt, cand);
-  const plainN = Number.isFinite(plain) ? normCosine(plain) : null;
-  if (chord != null && plainN != null) return 0.74 * chord + 0.26 * plainN;
-  return chord ?? plainN ?? null;
 }
 
 async function rankByEmbeddingBrute(
@@ -620,42 +249,43 @@ async function searchByEmbedding(
 }
 
 export async function searchByText(db: Database.Database, query: string, limit = 20): Promise<SimilarResult[]> {
-  if (!isSidecarRunning()) {
-    startSidecar();
-    await new Promise((r) => setTimeout(r, 3000));
-  }
-
-  const embedding = await getTextEmbedding(query);
-  if (!embedding) return [];
-
-  return searchByEmbedding(db, embedding, limit);
+  if (!(await isOllamaRunning())) return [];
+  const embedding = await embedText(query);
+  if (!embedding?.length) return [];
+  return searchByEmbedding(db, l2Normalize(embedding), limit);
 }
 
-/** Visually similar non-trashed images (excludes reference). Honors saved prefs (max results & min cosine). Optional `refineModes` fused re-ranking (CLIP text + palettes + metadata). */
+/**
+ * Find visually/semantically similar images for a given image.
+ * Combines:
+ *  - caption-text embedding cosine (semantic)
+ *  - pHash Hamming similarity (visual)
+ *  - palette overlap + hue agreement (chromatic)
+ */
 export async function findSimilarImagesWithPreviews(
   db: Database.Database,
   imageId: string,
   options?: FindSimilarOptions,
 ): Promise<SimilarMatchesResponse> {
-  const refineModes = options?.refineModes?.filter((m) => m === 'colors' || m === 'layout' || m === 'format') ?? [];
+  const refineModes = options?.refineModes?.filter((m) => m === 'colors') ?? [];
   const prefs = loadSimilarityPrefs(db);
   const limit = prefs.maxResults;
   const hadEmbeddingAlready = Boolean(db.prepare('SELECT 1 FROM image_embeddings WHERE image_id = ?').get(imageId));
 
-  if (!clipArtifactsPresent()) {
-    return { matches: [], emptyHint: 'python_venv_missing' };
+  if (!(await isOllamaRunning())) {
+    return { matches: [], emptyHint: 'ollama_unavailable' };
   }
 
   const ensured = await ensureImageEmbedding(db, imageId).catch(() => false);
   if (!ensured) {
-    return { matches: [], emptyHint: 'clip_embed_failed' };
+    return { matches: [], emptyHint: 'embedding_failed' };
   }
 
   const row = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?').get(imageId) as
     | { embedding: Buffer }
     | undefined;
   if (!row) {
-    return { matches: [], emptyHint: 'clip_embed_failed' };
+    return { matches: [], emptyHint: 'embedding_failed' };
   }
 
   const peerRow = db
@@ -668,8 +298,8 @@ export async function findSimilarImagesWithPreviews(
     )
     .get(imageId) as { c: number };
 
-  /** Radio UI: fuse/sort considers at most one chip (IPC may still send a list). */
   const refineModesSole = refineModes.slice(0, 1);
+  const colorsRefine = refineModesSole[0] === 'colors';
 
   const metaPayload = {
     sourceHadEmbeddingBefore: hadEmbeddingAlready,
@@ -686,15 +316,11 @@ export async function findSimilarImagesWithPreviews(
 
   const queryVec = blobToFloat32Vector(Buffer.from(row.embedding));
 
-  let neighborPrefetchCap =
-    prefs.similarityFloor !== null ? Math.min(800, Math.max(limit + 64, limit * 36)) : limit + 8;
-  if (refineModesSole.length > 0) {
-    neighborPrefetchCap = Math.min(800, Math.max(neighborPrefetchCap, Math.max(limit * 40, REFINE_POOL_CAP)));
-  }
-  if (refineModesSole.length === 1 && refineModesSole[0] === 'colors') {
-    const peerN = peerRow?.c ?? 0;
-    neighborPrefetchCap = Math.min(Math.max(peerN + 240, REFINE_POOL_CAP * 14, limit * 160), 4000);
-  }
+  const neighborPrefetchCap = colorsRefine
+    ? Math.min(Math.max(peerRow.c + 200, REFINE_POOL_CAP), 4000)
+    : prefs.similarityFloor !== null
+      ? Math.min(800, Math.max(limit + 64, limit * 12))
+      : Math.max(limit * 6, limit + 32);
 
   let ranked: Array<{ image_id: string; similarity: number }> = [];
   try {
@@ -709,7 +335,6 @@ export async function findSimilarImagesWithPreviews(
     `,
       )
       .all(JSON.stringify(Array.from(queryVec)), neighborPrefetchCap) as Array<{ image_id: string; distance: number }>;
-
     ranked = knn
       .filter((r) => r.image_id !== imageId)
       .map((r) => ({ image_id: r.image_id, similarity: Math.max(-1, 1 - Number(r.distance)) }));
@@ -722,37 +347,12 @@ export async function findSimilarImagesWithPreviews(
   const floorForDisplay =
     prefs.similarityFloor !== null ? MATCH_STRENGTH_TO_MIN_COSINE[prefs.similarityFloor] : null;
 
-  if (refineModesSole.length === 0) {
-    const out: VisualSimilarItem[] = [];
-    const seen = new Set<string>();
-    for (const hit of ranked) {
-      if (hit.image_id === imageId || seen.has(hit.image_id)) continue;
-      if (
-        prefs.similarityFloor !== null &&
-        hit.similarity < MATCH_STRENGTH_TO_MIN_COSINE[prefs.similarityFloor]
-      )
-        continue;
-      if (likenessDisplayPercentRounded(hit.similarity, floorForDisplay) === 0) continue;
-      const rec = imageRepo.getById(hit.image_id);
-      if (!rec || rec.is_trashed !== 0) continue;
-      const preview = previewFromRecord(rec);
-      if (!preview) continue;
-      out.push({ image: preview, similarity: hit.similarity });
-      seen.add(hit.image_id);
-      if (out.length >= limit) break;
-    }
-
-    if (out.length === 0 && prefs.similarityFloor !== null && ranked.length > 0) {
-      return { matches: [], emptyHint: 'similarity_below_threshold', meta: metaPayload };
-    }
-
-    return { matches: out, meta: metaPayload };
+  const srcRecord = imageRepo.getById(imageId);
+  if (!srcRecord) {
+    return { matches: [], emptyHint: 'embedding_failed', meta: metaPayload };
   }
 
-  const soleMode = refineModesSole[0];
-  const modeSet = new Set(refineModesSole);
-
-  const srcRecord = imageRepo.getById(imageId);
+  const srcPhash: bigint | null = srcRecord.phash ? blobToPhash(Buffer.from(srcRecord.phash)) : null;
 
   const paletteStmt = db.prepare(
     'SELECT hex_color, percentage FROM image_colors WHERE image_id = ? ORDER BY sort_order LIMIT 14',
@@ -760,36 +360,21 @@ export async function findSimilarImagesWithPreviews(
   const srcPalette = paletteStmt.all(imageId) as PaletteRow[];
 
   let focalHueBucket: number | null =
-    typeof srcRecord?.indexed_hue_bucket === 'number' ? srcRecord.indexed_hue_bucket : null;
+    typeof srcRecord.indexed_hue_bucket === 'number' ? srcRecord.indexed_hue_bucket : null;
   let focalHueStrength: number | null =
-    typeof srcRecord?.indexed_hue_strength === 'number' ? srcRecord.indexed_hue_strength : null;
+    typeof srcRecord.indexed_hue_strength === 'number' ? srcRecord.indexed_hue_strength : null;
   let focalHueBucket2: number | null =
-    typeof srcRecord?.indexed_hue_bucket_2 === 'number' ? srcRecord.indexed_hue_bucket_2 : null;
+    typeof srcRecord.indexed_hue_bucket_2 === 'number' ? srcRecord.indexed_hue_bucket_2 : null;
   let focalHueStrength2: number | null =
-    typeof srcRecord?.indexed_hue_strength_2 === 'number' ? srcRecord.indexed_hue_strength_2 : null;
+    typeof srcRecord.indexed_hue_strength_2 === 'number' ? srcRecord.indexed_hue_strength_2 : null;
 
-  let focalResolvedChrom: number | null =
-    srcRecord?.indexed_chromatic === 0 || srcRecord?.indexed_chromatic === 1
-      ? srcRecord.indexed_chromatic
-      : null;
-
-  const needFocalThumbIx =
-    refineModesSole.length === 1 &&
-    refineModesSole[0] === 'colors' &&
-    srcRecord?.thumbnail_path &&
-    (focalResolvedChrom === null ||
-      (focalResolvedChrom === 1 &&
-        (focalHueBucket === null ||
-          focalHueStrength == null ||
-          (typeof focalHueBucket === 'number' &&
-            focalHueStrength != null &&
-            focalHueStrength >= 0.11 &&
-            srcRecord?.indexed_hue_bucket_2 == null))));
-
-  if (needFocalThumbIx) {
+  if (
+    colorsRefine &&
+    srcRecord.thumbnail_path &&
+    (focalHueBucket === null || focalHueStrength == null)
+  ) {
     const ix = await persistThumbColorIndex(db, imageId, srcRecord.thumbnail_path);
     if (ix) {
-      if (ix.chromatic === 0 || ix.chromatic === 1) focalResolvedChrom = ix.chromatic;
       focalHueBucket = ix.hueBucket;
       focalHueStrength = ix.hueStrength;
       focalHueBucket2 = ix.hueBucketSecondary ?? null;
@@ -797,74 +382,29 @@ export async function findSimilarImagesWithPreviews(
     }
   }
 
-  const focalMedianChroma =
-    paletteMedianWeightedChroma(srcPalette) ?? weightedPaletteChroma(srcPalette);
-  const focalPeakChroma = paletteDominantPeakChroma(srcPalette);
-  const focalPaletteEffectiveChroma: number | null =
-    focalMedianChroma != null ? Math.min(focalMedianChroma, focalPeakChroma ?? focalMedianChroma) : null;
-  const focalChromaTune = focalMedianChroma ?? focalPaletteEffectiveChroma;
+  const focalChroma = weightedPaletteChroma(srcPalette);
+  const focalIsAchromatic = focalChroma != null && focalChroma <= FOCAL_MONOCHROME_MAX_CHROMA;
 
-  const textCache = new Map<string, Float32Array | null>();
-  await loadRefinePromptVectors(refineModesSole, textCache);
-
-  const layoutVec = refineModesSole.includes('layout') ? textCache.get(CLIP_PROMPT_LAYOUT) ?? null : null;
-  const formatVec = refineModesSole.includes('format') ? textCache.get(CLIP_PROMPT_FORMAT) ?? null : null;
-  const colorPromptVecVivid = refineModesSole.includes('colors') ? textCache.get(CLIP_PROMPT_COLORS_VIVID) ?? null : null;
-  const colorPromptVecNeutral =
-    refineModesSole.includes('colors') ? textCache.get(CLIP_PROMPT_COLORS_NEUTRAL) ?? null : null;
-  const colorPromptVecAchrome =
-    refineModesSole.includes('colors') ? textCache.get(CLIP_PROMPT_COLORS_ACHROME) ?? null : null;
-
-  const λEmbedColorCue = vividWeightFromEmbeddingVsPrompts(
-    queryVec,
-    colorPromptVecVivid,
-    colorPromptVecNeutral,
-    colorPromptVecAchrome,
-  );
-  const focalPaletteForClipBlend =
-    focalResolvedChrom === 0
-      ? 0
-      : focalResolvedChrom === 1
-        ? Math.max(focalPaletteEffectiveChroma ?? 0.16, FOCAL_MONOCHROME_MAX_CHROMA + 0.05)
-        : focalPaletteEffectiveChroma;
-  const λVividClip = blendVividClipLambda(λEmbedColorCue, focalPaletteForClipBlend);
-
-  const focalTreatAsMono =
-    focalResolvedChrom === 0
-      ? true
-      : focalResolvedChrom === 1
-        ? false
-        : focalPaletteEffectiveChroma !== null
-          ? focalPaletteEffectiveChroma <= FOCAL_MONOCHROME_MAX_CHROMA
-          : focalChromaTune !== null
-            ? focalChromaTune <= FOCAL_MONOCHROME_MAX_CHROMA
-            : λEmbedColorCue <= 0.375;
-
-  const focalChromaForColorsRow =
-    focalResolvedChrom === 0
-      ? Math.min(focalChromaTune ?? FOCAL_MONOCHROME_MAX_CHROMA * 0.45, FOCAL_MONOCHROME_MAX_CHROMA)
-      : focalResolvedChrom === 1
-        ? Math.max(focalChromaTune ?? 0.14, FOCAL_MONOCHROME_MAX_CHROMA + 0.035)
-        : focalChromaTune;
-
-  const colorsSimilarStrictAchromatic = soleMode === 'colors' && modeSet.size === 1 && focalTreatAsMono;
-
-  type PoolEntry = {
-    similarity: number;
-    preview: VisualSimilarItem['image'];
-    candRow: DbImageRecord;
+  type Scored = {
     id: string;
+    captionSim: number;
+    phashSim: number;
+    paletteSim: number | null;
+    fused: number;
+    record: DbImageRecord;
+    preview: VisualSimilarItem['image'];
   };
-  const pool: PoolEntry[] = [];
+  const scored: Scored[] = [];
 
-  let poolScans = 0;
+  let proc = 0;
   for (const hit of ranked) {
     if (hit.image_id === imageId) continue;
     if (
       prefs.similarityFloor !== null &&
       hit.similarity < MATCH_STRENGTH_TO_MIN_COSINE[prefs.similarityFloor]
-    )
+    ) {
       continue;
+    }
     if (likenessDisplayPercentRounded(hit.similarity, floorForDisplay) === 0) continue;
 
     const rec = imageRepo.getById(hit.image_id);
@@ -872,254 +412,104 @@ export async function findSimilarImagesWithPreviews(
     const preview = previewFromRecord(rec);
     if (!preview) continue;
 
-    if (colorsSimilarStrictAchromatic) {
-      if (await chromaticNeighborSkipForAchromaticSimilarColors(db, rec, paletteStmt)) {
-        poolScans++;
-        if (poolScans % 40 === 0) await yieldToEventLoop();
-        continue;
-      }
+    const captionSim = normCosine(hit.similarity);
+
+    let phashSim = 0;
+    if (srcPhash !== null && rec.phash) {
+      const candPhash = blobToPhash(Buffer.from(rec.phash));
+      phashSim = phashSimilarity(phashHamming(srcPhash, candPhash));
     }
 
-    pool.push({ id: hit.image_id, similarity: hit.similarity, preview, candRow: rec });
-    if (pool.length >= REFINE_POOL_CAP) break;
-
-    poolScans++;
-    if (poolScans % 48 === 0) await yieldToEventLoop();
-  }
-
-  /** If every NN is saturated,relax once so sparse B&W libraries do not blank the strip entirely. */
-  if (colorsSimilarStrictAchromatic && pool.length === 0 && ranked.length > 0) {
-    for (const hit of ranked) {
-      if (hit.image_id === imageId) continue;
-      if (
-        prefs.similarityFloor !== null &&
-        hit.similarity < MATCH_STRENGTH_TO_MIN_COSINE[prefs.similarityFloor]
-      )
-        continue;
-      if (likenessDisplayPercentRounded(hit.similarity, floorForDisplay) === 0) continue;
-      const rec = imageRepo.getById(hit.image_id);
-      if (!rec || rec.is_trashed !== 0) continue;
-      const preview = previewFromRecord(rec);
-      if (!preview) continue;
-      pool.push({ id: hit.image_id, similarity: hit.similarity, preview, candRow: rec });
-      if (pool.length >= REFINE_POOL_CAP) break;
-    }
-  }
-
-  const embStmt = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?');
-
-  const scored: RefinedScoredRow[] = [];
-  let proc = 0;
-
-  for (const p of pool) {
-    const embRow = embStmt.get(p.id) as { embedding: Buffer } | undefined;
-    if (!embRow) continue;
-    const candVec = blobToFloat32Vector(Buffer.from(embRow.embedding));
-
-    const imgNorm = normCosine(p.similarity);
-
-    let paletteScore: number | null = null;
-    if (modeSet.has('colors')) {
-      const cp = paletteStmt.all(p.id) as PaletteRow[];
-      const { symmetric: _dbSymmetric, boosted: dbPaletteBoosted, ab: palAb, ba: palBa } =
-        paletteCompositionForSimilarColors(srcPalette, cp);
-
-      const embedPaletteGateRescue =
-        p.similarity >= SIMILAR_COLORS_PALETTE_GATE_BYPASS_EMBED_MIN;
-
-      const splitTwoTonePal =
-        palAb != null &&
-        palBa != null &&
-        Math.min(palAb, palBa) < 0.31 &&
-        Math.max(palAb, palBa) > 0.44;
-
-      const dbBlendMutable = dbPaletteBoosted;
-
-      const candPaletteChroma = weightedPaletteChroma(cp);
-
-      const vividS =
-        colorPromptVecVivid != null ? clipColorHybridScore(colorPromptVecVivid, candVec, queryVec) : null;
-      const neutralS =
-        colorPromptVecNeutral != null
-          ? clipColorHybridScore(colorPromptVecNeutral, candVec, queryVec)
-          : null;
-      const achromeS =
-        colorPromptVecAchrome != null
-          ? clipColorHybridScore(colorPromptVecAchrome, candVec, queryVec)
-          : null;
-      const calmPool = [neutralS, achromeS].filter((x): x is number => x != null && Number.isFinite(x));
-      const calmSBlend = calmPool.length > 0 ? Math.max(...calmPool) : null;
-
-      const surrogateChrom = candChromaSurrogateClip(vividS, calmSBlend);
-
-      let dbBlend = dbBlendMutable;
-      if (focalTreatAsMono && dbBlend != null) {
-        const chromProxyForDb = candPaletteChroma ?? surrogateChrom ?? 0.44;
-        dbBlend *= Math.exp(-Math.max(0, chromProxyForDb - 0.055) * 3.72);
-      }
-
-      let clipColorScore: number | null = null;
-      if (vividS != null && calmSBlend != null) {
-        clipColorScore = λVividClip * vividS + (1 - λVividClip) * calmSBlend;
-      } else {
-        clipColorScore = vividS ?? calmSBlend ?? null;
-      }
-
-      let paletteScoreStage =
-        dbBlend != null && clipColorScore != null
-          ? 0.41 * dbBlend + 0.59 * clipColorScore
-          : dbBlend ?? clipColorScore ?? null;
-
-      const candChromEstimate = candPaletteChroma ?? surrogateChrom ?? null;
-
-      if (paletteScoreStage != null && focalChromaForColorsRow != null && candChromEstimate !== null) {
-        paletteScoreStage *= 0.22 + 0.78 * chromaAgreementFactor(focalChromaForColorsRow, candChromEstimate);
-      }
-
-      if (
-        paletteScoreStage !== null &&
-        focalChromaForColorsRow !== null &&
-        focalChromaForColorsRow <= FOCAL_MONOCHROME_MAX_CHROMA &&
-        candChromEstimate !== null
-      ) {
-        paletteScoreStage *= achromaticPenalty(focalChromaForColorsRow, candChromEstimate);
-      }
-
-      if (paletteScoreStage != null)
-        paletteScoreStage *= indexedChromaticAgreement(focalResolvedChrom, p.candRow.indexed_chromatic);
-
-      if (
-        paletteScoreStage != null &&
-        soleMode === 'colors' &&
-        modeSet.size === 1 &&
-        !focalTreatAsMono &&
-        !embedPaletteGateRescue &&
-        !splitTwoTonePal
-      ) {
-        const DUAL_PRI = 0.17;
-        const DUAL_SEC = 0.036;
-        const DUAL_SEP = 3;
-
-        const focalDual =
-          typeof focalHueBucket === 'number' &&
-          focalHueStrength != null &&
-          focalHueStrength >= DUAL_PRI &&
-          typeof focalHueBucket2 === 'number' &&
-          focalHueStrength2 != null &&
-          focalHueStrength2 >= DUAL_SEC &&
-          hueBinRingSteps(focalHueBucket, focalHueBucket2) >= DUAL_SEP;
-        const candDual =
-          typeof p.candRow.indexed_hue_bucket === 'number' &&
-          p.candRow.indexed_hue_strength != null &&
-          p.candRow.indexed_hue_strength >= DUAL_PRI &&
-          typeof p.candRow.indexed_hue_bucket_2 === 'number' &&
-          p.candRow.indexed_hue_strength_2 != null &&
-          p.candRow.indexed_hue_strength_2 >= DUAL_SEC &&
-          hueBinRingSteps(p.candRow.indexed_hue_bucket, p.candRow.indexed_hue_bucket_2) >= DUAL_SEP;
-
-        if (focalDual && candDual) {
-          paletteScoreStage *= dualDominantHueBoost(
-            focalHueBucket,
-            focalHueStrength,
-            focalHueBucket2,
-            focalHueStrength2,
-            p.candRow.indexed_hue_bucket,
-            p.candRow.indexed_hue_strength,
-            p.candRow.indexed_hue_bucket_2,
-            p.candRow.indexed_hue_strength_2,
-          );
-        } else {
-          paletteScoreStage *= dominantHueAxisMultiplier(
-            focalHueBucket,
-            focalHueStrength,
-            p.candRow.indexed_hue_bucket,
-            p.candRow.indexed_hue_strength,
-          );
+    let paletteSim: number | null = null;
+    if (colorsRefine || srcPalette.length > 0) {
+      const cp = paletteStmt.all(hit.image_id) as PaletteRow[];
+      const overlap = symmetricPaletteOverlap(srcPalette, cp);
+      if (overlap !== null) {
+        let s = overlap;
+        if (focalHueBucket != null && focalHueStrength != null) {
+          const focalDual =
+            focalHueStrength >= 0.17 &&
+            typeof focalHueBucket2 === 'number' &&
+            focalHueStrength2 != null &&
+            focalHueStrength2 >= 0.036 &&
+            hueBinRingSteps(focalHueBucket, focalHueBucket2) >= 3;
+          const candDual =
+            typeof rec.indexed_hue_bucket === 'number' &&
+            rec.indexed_hue_strength != null &&
+            rec.indexed_hue_strength >= 0.17 &&
+            typeof rec.indexed_hue_bucket_2 === 'number' &&
+            rec.indexed_hue_strength_2 != null &&
+            rec.indexed_hue_strength_2 >= 0.036 &&
+            hueBinRingSteps(rec.indexed_hue_bucket, rec.indexed_hue_bucket_2) >= 3;
+          if (focalDual && candDual) {
+            s *= dualDominantHueBoost(
+              focalHueBucket,
+              focalHueStrength,
+              focalHueBucket2,
+              focalHueStrength2,
+              rec.indexed_hue_bucket,
+              rec.indexed_hue_strength,
+              rec.indexed_hue_bucket_2,
+              rec.indexed_hue_strength_2,
+            );
+          } else {
+            s *= dominantHueAxisMultiplier(
+              focalHueBucket,
+              focalHueStrength,
+              rec.indexed_hue_bucket,
+              rec.indexed_hue_strength,
+            );
+          }
         }
-      }
-
-      paletteScore = paletteScoreStage;
-
-      if (
-        soleMode === 'colors' &&
-        modeSet.size === 1 &&
-        embedPaletteGateRescue &&
-        paletteScore != null &&
-        paletteScore < imgNorm * 0.88
-      ) {
-        paletteScore = Math.max(paletteScore, imgNorm * 0.9);
-      }
-
-      if (
-        dbPaletteBoosted != null &&
-        dbPaletteBoosted < PALETTE_COMPOSITION_GATE &&
-        !embedPaletteGateRescue
-      ) {
-        continue;
-      }
-    }
-
-    let layoutComposite: number | null = null;
-    if (modeSet.has('layout')) {
-      const parts: number[] = [];
-      const asp =
-        srcRecord?.width != null &&
-        srcRecord?.height != null &&
-        typeof srcRecord.width === 'number' &&
-        typeof srcRecord.height === 'number'
-          ? aspectOverlapScore(srcRecord.width, srcRecord.height, p.candRow.width, p.candRow.height)
-          : null;
-      if (asp != null && Number.isFinite(asp)) parts.push(Math.max(0, Math.min(1, asp)));
-      if (layoutVec) {
-        const d = dotNormalized(layoutVec, candVec);
-        if (Number.isFinite(d)) parts.push(normCosine(d));
-      }
-      if (parts.length > 0) {
-        layoutComposite = parts.reduce((a, x) => a + x, 0) / parts.length;
-      }
-    }
-
-    let formatComposite: number | null = null;
-    if (modeSet.has('format') && srcRecord) {
-      const metaPart = metadataFormatAgreement(srcRecord, p.candRow);
-      let clipPart = 0;
-      let clipN = 0;
-      if (formatVec) {
-        const fd = dotNormalized(formatVec, candVec);
-        if (Number.isFinite(fd)) {
-          clipPart += normCosine(fd);
-          clipN += 1;
+        // Penalize achromatic source matched against saturated candidates and vice versa.
+        const candChroma = weightedPaletteChroma(cp);
+        if (focalIsAchromatic && candChroma != null && candChroma > 0.2) {
+          s *= 0.55;
         }
+        paletteSim = Math.max(0, Math.min(1, s));
       }
-      formatComposite = clipN > 0 ? 0.5 * metaPart + 0.5 * (clipPart / clipN) : metaPart;
     }
 
-    let fused = fuseRankScore(modeSet, imgNorm, paletteScore, layoutComposite, formatComposite);
-    if (modeSet.has('colors') && paletteScore === null && modeSet.size === 1) {
-      fused = imgNorm * 0.38;
+    if (colorsRefine && paletteSim !== null && paletteSim < PALETTE_COMPOSITION_GATE) {
+      continue;
     }
-    scored.push({
-      fused,
-      similarity: p.similarity,
-      layoutComposite,
-      formatComposite,
-      paletteScore,
-      item: { image: p.preview, similarity: p.similarity },
-    });
+
+    let fused: number;
+    if (colorsRefine && paletteSim !== null) {
+      fused =
+        W_COLOR_REFINE * paletteSim +
+        W_CAPTION_REFINE * captionSim +
+        W_PHASH_REFINE * phashSim;
+    } else if (paletteSim !== null) {
+      fused =
+        W_CAPTION * captionSim +
+        W_PHASH * phashSim +
+        W_COLOR_BASELINE * paletteSim;
+    } else {
+      // No palette signal — redistribute color weight to caption.
+      fused = (W_CAPTION + W_COLOR_BASELINE) * captionSim + W_PHASH * phashSim;
+    }
+
+    scored.push({ id: hit.image_id, captionSim, phashSim, paletteSim, fused, record: rec, preview });
+
+    if (scored.length >= REFINE_POOL_CAP * 2) break;
 
     proc++;
-    if (proc % 72 === 0) await yieldToEventLoop();
+    if (proc % 64 === 0) await yieldToEventLoop();
   }
 
-  scored.sort((a, b) => refinedSortCmp(a, b, soleMode));
+  scored.sort((a, b) => b.fused - a.fused);
 
-  const outRefined = scored.slice(0, limit).map((s) => s.item);
+  const out = scored.slice(0, limit).map((s) => ({
+    image: s.preview,
+    similarity: s.captionSim,
+  }));
 
-  if (outRefined.length === 0 && prefs.similarityFloor !== null && ranked.length > 0) {
+  if (out.length === 0 && prefs.similarityFloor !== null && ranked.length > 0) {
     return { matches: [], emptyHint: 'similarity_below_threshold', meta: metaPayload };
   }
 
-  return { matches: outRefined, meta: metaPayload };
+  return { matches: out, meta: metaPayload };
 }
 
 export function warmImageEmbedding(db: Database.Database, imageId: string): void {
@@ -1129,22 +519,42 @@ export function warmImageEmbedding(db: Database.Database, imageId: string): void
 }
 
 export async function findSimilarImages(db: Database.Database, imageId: string, limit = 20): Promise<SimilarResult[]> {
-  const row = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?').get(imageId) as { embedding: Buffer } | undefined;
+  const row = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?').get(imageId) as
+    | { embedding: Buffer }
+    | undefined;
   if (!row) return [];
   const floats = blobToFloat32Vector(Buffer.from(row.embedding));
-  const buffer = Buffer.from(new Float32Array(floats).buffer);
   try {
-    return db.prepare(`SELECT image_id, distance FROM image_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?`).all(buffer, limit) as SimilarResult[];
+    return db
+      .prepare(
+        `SELECT image_id, distance FROM image_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?`,
+      )
+      .all(JSON.stringify(Array.from(floats)), limit) as SimilarResult[];
   } catch {
     return [];
   }
 }
 
-export async function generateAndStoreEmbedding(db: Database.Database, imageId: string, imagePath: string): Promise<boolean> {
-  const embedding = await getImageEmbedding(imagePath);
-  if (!embedding) return false;
-  upsertImageEmbedding(db, imageId, embedding);
-  return true;
+/** Generate and store the caption embedding + pHash for an image. Used during import and re-analysis. */
+export async function generateAndStoreEmbedding(
+  db: Database.Database,
+  imageId: string,
+  imagePath: string,
+): Promise<boolean> {
+  const imageRepo = createImageRepo(db);
+  const existing = imageRepo.getById(imageId);
+  if (!existing) return false;
+
+  if (!existing.phash) {
+    try {
+      const ph = await computePHash(imagePath);
+      if (ph !== null) imageRepo.setPhash(imageId, phashToBlob(ph));
+    } catch {
+      // Non-critical
+    }
+  }
+
+  return embedAndStoreForImage(db, imageId);
 }
 
 export function getEmbeddingCount(db: Database.Database): number {

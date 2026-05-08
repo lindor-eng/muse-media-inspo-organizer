@@ -31,6 +31,36 @@ export async function unloadModel(): Promise<void> {
   }
 }
 
+const EMBED_MODEL = 'nomic-embed-text';
+/** nomic-embed-text returns 768-dim vectors. Cached from the first successful call. */
+let cachedEmbedDim: number | null = null;
+
+export function getEmbedDim(): number | null {
+  return cachedEmbedDim;
+}
+
+export async function embedText(text: string): Promise<number[] | null> {
+  if (!text) return null;
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
+    });
+    if (!res.ok) {
+      console.warn('[ollama] embed failed:', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    const data = (await res.json()) as { embedding?: number[] };
+    if (!data.embedding?.length) return null;
+    if (cachedEmbedDim === null) cachedEmbedDim = data.embedding.length;
+    return data.embedding;
+  } catch (err) {
+    console.warn('[ollama] embed error:', err);
+    return null;
+  }
+}
+
 export async function getAvailableModels(): Promise<string[]> {
   try {
     const res = await fetch(`${getBaseUrl()}/api/tags`);
@@ -74,7 +104,7 @@ export async function analyzeImage(imagePath: string): Promise<ImageAnalysis> {
       model: 'llava:7b-v1.6-mistral-q4_K_M',
       prompt: `Analyze this image and respond in exactly this format:
 Alt: [1-2 sentences describing the image for accessibility, under 200 characters. Be specific about subjects, actions, and setting.]
-Description: [2-3 sentences describing the content, style, and mood]
+Description: [2-3 sentences describing the content, style, mood, composition (e.g. centered, off-center, diagonal), palette (e.g. warm, muted, monochrome), and lighting]
 Tags: [5-10 comma-separated keyword tags for subject, style, mood, colors, medium]`,
       images: [base64Image],
       stream: false,

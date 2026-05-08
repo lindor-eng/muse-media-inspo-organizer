@@ -12,6 +12,7 @@ export function ImageCard({ image }: Props) {
     selectedImageId, setSelectedImage, toggleImageSelection, selectedImageIds, isCmdHeld,
     setDraggingImage, folders, tags, trashImage, deleteImage, refreshAll, loadTags,
     bulkTrashImages, bulkDeleteImages, bulkRestoreImages, bulkMoveToFolder, bulkAddTag,
+    gridThumbHeight,
   } = useAppStore();
   const cardRef = useRef<HTMLDivElement>(null);
   const isFocused = selectedImageId === image.id;
@@ -151,8 +152,9 @@ export function ImageCard({ image }: Props) {
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         onContextMenu={handleContextMenu}
-        className={`cursor-pointer rounded-lg overflow-hidden border-2 h-48 relative
+        className={`cursor-pointer rounded-lg overflow-hidden border-2 relative
           ${isBulkSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : isSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : 'border-transparent hover:border-gray-700'}`}
+        style={{ height: gridThumbHeight }}
         onClick={handleClick}
       >
         <img

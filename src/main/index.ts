@@ -3,7 +3,6 @@ import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { initDatabase } from './database/connection';
 import { registerIpcHandlers } from './ipc-handlers';
-import { killStaleSidecars } from './ai/python-sidecar';
 import { startOllamaServer, stopOllamaServer, isModelAvailable, pullModel, type PullProgress } from './ai/ollama-server';
 
 if (started) app.quit();
@@ -45,8 +44,6 @@ const createWindow = () => {
 };
 
 app.on('ready', async () => {
-  killStaleSidecars();
-
   protocol.handle('local-file', (request) => {
     const filePath = decodeURIComponent(request.url.replace('local-file://', ''));
     return net.fetch(`file://${filePath}`);

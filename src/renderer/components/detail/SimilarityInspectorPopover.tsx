@@ -61,7 +61,7 @@ export function SimilarityInspectorPopover({ prefs, onSave, onCancel, peerCandid
             {LIKENESS_LENS_SCALE_TOOLTIP}
           </p>
           <div className="text-[10px] text-gray-600 leading-snug space-y-1.5">
-            <span className="block text-[10px] font-medium text-gray-400">Similar colors, layout & format</span>
+            <span className="block text-[10px] font-medium text-gray-400">Similar colors</span>
             {SIMILAR_REFINE_MODES.map((m) => (
               <p key={m} className="leading-snug">
                 {REFINE_MODE_HELP[m]}

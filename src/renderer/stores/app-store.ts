@@ -19,6 +19,25 @@ const DEFAULT_SIMILARITY_PREFS: SimilarityPrefs = {
   maxResults: 14,
 };
 
+/** Bounds and storage key for the user-resizable grid thumbnail. */
+export const GRID_THUMB_MIN = 96;
+export const GRID_THUMB_MAX = 360;
+export const GRID_THUMB_DEFAULT = 192;
+const GRID_THUMB_STORAGE_KEY = 'muse:gridThumbHeight';
+
+function loadInitialGridThumb(): number {
+  if (typeof window === 'undefined') return GRID_THUMB_DEFAULT;
+  try {
+    const raw = window.localStorage.getItem(GRID_THUMB_STORAGE_KEY);
+    if (!raw) return GRID_THUMB_DEFAULT;
+    const n = Math.round(Number(raw));
+    if (!Number.isFinite(n)) return GRID_THUMB_DEFAULT;
+    return Math.min(GRID_THUMB_MAX, Math.max(GRID_THUMB_MIN, n));
+  } catch {
+    return GRID_THUMB_DEFAULT;
+  }
+}
+
 /** Dedupe parallel initial loads (StrictMode double-mount). */
 let similarityPrefsHydrateBusy = false;
 /** Incremented on each prefs save so in-flight hydrate reads cannot clobber newer UI state (async race vs IPC). */
@@ -113,8 +132,8 @@ export interface SimilarImageEntry {
 }
 
 export type SimilarImagesEmptyHint =
-  | 'python_venv_missing'
-  | 'clip_embed_failed'
+  | 'ollama_unavailable'
+  | 'embedding_failed'
   | 'needs_other_indexed_images'
   | 'similarity_below_threshold';
 
@@ -150,6 +169,8 @@ interface AppState {
   searchQuery: string;
   isSearching: boolean;
   isCmdHeld: boolean;
+  /** Grid thumbnail height in px (user-controlled via slider). */
+  gridThumbHeight: number;
   /** Bumped to force DetailPanel/ImageFocus to re-fetch image metadata after a backend mutation that bypassed local state (e.g. AI re-analysis). */
   detailRefreshNonce: number;
   draggingImageId: string | null;
@@ -180,6 +201,7 @@ interface AppState {
   setSearchQuery: (query: string) => void;
   executeSearch: (query: string) => Promise<void>;
   setTheme: (theme: 'light' | 'dark') => void;
+  setGridThumbHeight: (px: number) => void;
   setDraggingImage: (id: string | null) => void;
 
   loadFolders: () => Promise<void>;
@@ -224,6 +246,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   searchQuery: '',
   isSearching: false,
   isCmdHeld: false,
+  gridThumbHeight: loadInitialGridThumb(),
   draggingImageId: null,
   focusOriginRect: null,
   isClosingFocus: false,
@@ -339,6 +362,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   setTheme: (theme) => set({ theme }),
+
+  setGridThumbHeight: (px) => {
+    const clamped = Math.min(GRID_THUMB_MAX, Math.max(GRID_THUMB_MIN, Math.round(px)));
+    set({ gridThumbHeight: clamped });
+    try {
+      window.localStorage.setItem(GRID_THUMB_STORAGE_KEY, String(clamped));
+    } catch {
+      // Storage not available — accept session-only value.
+    }
+  },
   setDraggingImage: (id) => set({ draggingImageId: id }),
 
   loadFolders: async () => {

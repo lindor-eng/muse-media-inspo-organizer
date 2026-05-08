@@ -34,7 +34,7 @@ src/
 │   ├── database/         # SQLite schema + repositories
 │   ├── importer.ts       # File import pipeline
 │   ├── color-extractor.ts
-│   └── ai/              # Ollama + CLIP integration
+│   └── ai/              # Ollama integration (vision + text embeddings)
 ├── renderer/            # React frontend
 │   ├── components/      # UI components (layout, grid, detail, sidebar)
 │   ├── stores/          # Zustand state management
@@ -51,13 +51,11 @@ AI features require Ollama running locally. Without it, the app works normally �
 # Start Ollama
 ollama serve
 
-# Pull the vision model for auto-tagging
+# Pull the vision model for auto-tagging + alt text
 ollama pull llava:7b-v1.6-mistral-q4_K_M
 
-# For CLIP-based similarity search (optional)
-cd python
-python3 -m venv .venv
-.venv/bin/pip install open-clip-torch torch Pillow numpy
+# Pull the text embedding model for similarity / search
+ollama pull nomic-embed-text
 ```
 
 ## Scripts

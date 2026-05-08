@@ -1,10 +1,10 @@
 import { useCallback, useEffect } from 'react';
-import { Search, Plus, Import, Loader2 } from 'lucide-react';
-import { useAppStore } from '../../stores/app-store';
+import { Search, Plus, Import, Loader2, Grid2x2, Grid3x3 } from 'lucide-react';
+import { useAppStore, GRID_THUMB_MIN, GRID_THUMB_MAX } from '../../stores/app-store';
 import { ImageCard } from './ImageCard';
 
 export function ContentGrid() {
-  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus, selectedImageIds, clearSelection } = useAppStore();
+  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus, selectedImageIds, clearSelection, gridThumbHeight, setGridThumbHeight } = useAppStore();
   const showToolbar = !selectedImageId || isClosingFocus;
 
   useEffect(() => {
@@ -64,6 +64,22 @@ export function ContentGrid() {
         className={`fixed top-0 right-0 z-50 flex items-center gap-3 px-4 h-12 border-b border-gray-800 transition-opacity ${showToolbar ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         style={{ transitionTimingFunction: 'cubic-bezier(0.2, 0.9, 0.3, 1)', transitionDuration: '350ms' }}
       >
+        <div className="flex items-center gap-2">
+          <Grid3x3 size={14} className="text-gray-500" />
+          <input
+            type="range"
+            aria-label="Thumbnail size"
+            title={`Thumbnail size: ${gridThumbHeight}px`}
+            min={GRID_THUMB_MIN}
+            max={GRID_THUMB_MAX}
+            step={4}
+            value={gridThumbHeight}
+            onChange={(e) => setGridThumbHeight(Number(e.target.value))}
+            className="w-24 h-1 accent-blue-500 cursor-pointer"
+          />
+          <Grid2x2 size={14} className="text-gray-500" />
+        </div>
+
         <div className="relative">
           {isSearching ? (
             <Loader2 size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-blue-400 animate-spin" />

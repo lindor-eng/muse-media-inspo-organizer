@@ -1,17 +1,13 @@
-/** Ephemeral refinement for CLIP NN similar-image ranking (session-only UI). At most one mode per request. */
+/** Ephemeral refinement for similar-image ranking (session-only UI). At most one mode per request. */
 
-export const SIMILAR_REFINE_MODES = ['colors', 'layout', 'format'] as const;
+export const SIMILAR_REFINE_MODES = ['colors'] as const;
 
 export type SimilarRefineMode = (typeof SIMILAR_REFINE_MODES)[number];
 
 /** Long-form help for refinement chips / inspector tooltips. */
 export const REFINE_MODE_HELP: Record<SimilarRefineMode, string> = {
   colors:
-    'Similar colors: Compares exported palettes and three CLIP probes (vivid, neutral, achromatic) blended from the focal median chroma and embedding. Monochrome sources down-rank saturated neighbors; median chroma resists one bright accidental swatch.',
-  layout:
-    'Similar layout: Re-ranks with CLIP “layout/composition” text plus aspect-ratio overlap. CLIP is approximate; this only refines the shortlist.',
-  format:
-    'Similar format: Re-ranks with CLIP “format” cues plus aspect ratio and MIME-type heuristics.',
+    'Similar colors: Re-ranks by extracted palette overlap and dominant-hue agreement. Useful when you want to find images that share the same chromatic mood, even if their subjects differ.',
 };
 
 export function combinedRefinementHelp(): string {
@@ -22,7 +18,7 @@ export function combinedRefinementHelp(): string {
 export function parseSimilarRefineModes(raw: unknown): SimilarRefineMode[] {
   if (!Array.isArray(raw)) return [];
   for (const x of raw) {
-    if (x === 'colors' || x === 'layout' || x === 'format') {
+    if (x === 'colors') {
       return [x];
     }
   }

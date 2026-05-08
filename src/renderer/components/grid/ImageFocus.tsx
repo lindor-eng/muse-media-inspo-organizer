@@ -27,7 +27,6 @@ export function ImageFocus() {
     setSimilarRefineMode,
     detailRefreshNonce,
   } = useAppStore();
-  const [clipSidecar, setClipSidecar] = useState<boolean | null>(null);
   const [image, setImage] = useState<ImageRecord | null>(null);
   const [phase, setPhase] = useState<Phase>('measure');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,28 +48,6 @@ export function ImageFocus() {
       api.getImage(selectedImageId).then(setImage);
     }
   }, [selectedImageId, detailRefreshNonce]);
-
-  useEffect(() => {
-    if (!selectedImageId) {
-      setClipSidecar(null);
-      return;
-    }
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const s = (await api.getAIStatus()) as { sidecar?: boolean };
-        if (!cancelled) setClipSidecar(Boolean(s?.sidecar));
-      } catch {
-        if (!cancelled) setClipSidecar(null);
-      }
-    };
-    poll();
-    const tid = window.setInterval(poll, 9000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(tid);
-    };
-  }, [selectedImageId]);
 
   useEffect(() => {
     if (!similarInspectorOpen) return;
@@ -388,7 +365,6 @@ export function ImageFocus() {
             size="md"
             similarFetchEmbedBaseline={similarFetchEmbedBaseline}
             similarMatchesMeta={similarMatchesMeta}
-            clipSidecarRunning={clipSidecar}
             showInspectorGear
             inspectorSettingsOpen={similarInspectorOpen}
             inspectorSettingsPopover={

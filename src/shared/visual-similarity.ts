@@ -1,12 +1,12 @@
 /**
- * Tier keys for likeness floors (CLIP dot score on normalized thumbnail embeddings).
+ * Tier keys for likeness floors (caption-embedding cosine on L2-normalized vectors).
  * Strict tightest cutoff, Close and Narrow progressively looser — `Wide` UI = no cutoff (null floor).
  *
- * Cosine/dot is similarity in roughly [-1, 1]; higher cutoff = fewer matches / higher bar.
+ * Cosine is similarity in roughly [-1, 1]; higher cutoff = fewer matches / higher bar.
  */
 export type MatchStrengthTier = 'broad' | 'balanced' | 'strict';
 
-/** Minimum raw CLIP cosine/dot kept for each lens (ranked list skips below cutoff). */
+/** Minimum raw cosine kept for each lens (ranked list skips below cutoff). */
 export const MATCH_STRENGTH_TO_MIN_COSINE: Record<MatchStrengthTier, number> = {
   /** Narrow tier — looser cutoff (formerly broad). */
   broad: 0.41,
@@ -51,7 +51,7 @@ export const MATCH_TIER_PILL_LABEL: Record<MatchStrengthTier, string> = {
 
 /** Native tooltip text for likeness lens dropdown / scale (shown beside settings in the strip). */
 export const LIKENESS_LENS_SCALE_TOOLTIP =
-  'Strict tightest likeness cutoff (fewer neighbors). Close and Narrow are progressively looser. Wide (Default) applies no cutoff. With a lens, thumbnail % is headroom above that cutoff (0% at the floor). With Wide, % uses the full library scale. OpenCLIP ViT-B-32 on indexed thumbnails.';
+  'Strict tightest likeness cutoff (fewer neighbors). Close and Narrow are progressively looser. Wide (Default) applies no cutoff. With a lens, thumbnail % is headroom above that cutoff (0% at the floor). With Wide, % uses the full library scale. Likeness combines caption embeddings, perceptual hash, and palette overlap.';
 
 /**
  * Rounded 0–100 badge value (floor `null` = library-scale mapping; else headroom above cutoff).

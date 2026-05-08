@@ -19,8 +19,6 @@ import type {
 /** Compact strip chip labels */
 const REFINE_STRIP_LABEL: Record<SimilarRefineMode, string> = {
   colors: 'Colors',
-  layout: 'Layout',
-  format: 'Format',
 };
 
 interface Props {
@@ -33,7 +31,6 @@ interface Props {
   size?: 'sm' | 'md';
   similarFetchEmbedBaseline: boolean | null;
   similarMatchesMeta: SimilarMatchesMeta | null;
-  clipSidecarRunning?: boolean | null;
   showInspectorGear?: boolean;
   inspectorSettingsOpen?: boolean;
   inspectorSettingsPopover?: React.ReactNode;
@@ -57,8 +54,8 @@ function loadingLine(
 ): string | null {
   if (!loading) return null;
   if (!baselineKnown) return 'Checking index…';
-  if (baseline === false) return 'Building CLIP embedding, then comparing…';
-  return 'Comparing embeddings in your library…';
+  if (baseline === false) return 'Indexing this image, then comparing…';
+  return 'Comparing across your library…';
 }
 
 interface ThumbProps {
@@ -87,7 +84,7 @@ function SimilarThumbnailButton({
   const pct = displayLikenessPercent(similarity, badgeFloorCosine);
   const explain =
     badgeFloorCosine === null
-      ? 'Library-scale likeness (OpenCLIP dot on thumbnails)'
+      ? 'Library-scale caption-embedding likeness'
       : `Headroom above your lens baseline (0% at cutoff, 100% at perfect match)`;
   const title = showLikenessOverlay
     ? `${image.title || image.filename} · ${pct} — ${explain}`
@@ -151,24 +148,19 @@ function PreviousSimilarThumb({ image, thumbClass, onBack, size = 'sm' }: BackTh
 }
 
 function emptyStateMessage(hint: SimilarImagesEmptyHint | null | undefined): string {
-  if (hint === 'python_venv_missing') {
-    return 'CLIP is not set up: create python/.venv in this project and run pip install -r python/requirements.txt (see README), then restart Muse.';
+  if (hint === 'ollama_unavailable') {
+    return 'Ollama isn\'t running — the AI server is needed for similarity. Confirm the bundled Ollama process is up (check the main process console) or relaunch Muse.';
   }
-  if (hint === 'clip_embed_failed') {
-    return 'Could not compute an embedding for this image. Confirm the Python sidecar runs (Terminal: python/.venv/bin/python3 python/embed_server.py) and check the main process console.';
+  if (hint === 'embedding_failed') {
+    return 'Could not generate a caption embedding for this image. Re-analyze it from the right-click menu and try again.';
   }
   if (hint === 'needs_other_indexed_images') {
-    return 'You need at least two indexed images for matches (Trash excluded). Import another reference — embeddings queue after import — wait a short moment, then re-open this file or browse away and back.';
+    return 'You need at least two indexed images for matches (Trash excluded). Import another reference — indexing queues after import — wait a moment, then re-open this file.';
   }
   if (hint === 'similarity_below_threshold') {
     return 'Nothing met your likeness cutoff — widen the lens menu (toward Narrow, Close, or Wide), bump Max suggestions in settings, or clear strip filters.';
   }
-  return 'No close visual neighbors for this thumbnail embedding. Imports still indexing show up after a moment.';
-}
-
-function clipBadge(sidecarRunning: boolean | undefined | null): string {
-  if (sidecarRunning === null || sidecarRunning === undefined) return 'CLIP …';
-  return sidecarRunning ? 'CLIP process on' : 'CLIP Idle';
+  return 'No close neighbors for this image yet. Imports still indexing show up after a moment.';
 }
 
 export function SimilarImagesStrip({
@@ -181,7 +173,6 @@ export function SimilarImagesStrip({
   size = 'sm',
   similarFetchEmbedBaseline,
   similarMatchesMeta: _similarMatchesMeta,
-  clipSidecarRunning,
   showInspectorGear,
   inspectorSettingsOpen,
   inspectorSettingsPopover,
@@ -255,12 +246,6 @@ export function SimilarImagesStrip({
                 />
               </div>
             ) : null}
-            <span
-              className="text-[10px] text-gray-600 tabular-nums px-1.5 py-0 rounded border border-gray-800 truncate max-w-[7rem]"
-              title={`${clipBadge(clipSidecarRunning)} — embedding sidecar`}
-            >
-              [{clipBadge(clipSidecarRunning)}]
-            </span>
             {showInspectorGear ? (
               <button
                 type="button"

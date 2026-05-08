@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { Download, Check, Loader2, Sparkles } from 'lucide-react';
 import { api } from '../../lib/ipc';
 
-const MODEL_NAME = 'llava:7b-v1.6-mistral-q4_K_M';
+const VISION_MODEL = 'llava:7b-v1.6-mistral-q4_K_M';
+const EMBED_MODEL = 'nomic-embed-text';
 
 interface PullProgress {
   model: string;
@@ -22,7 +23,6 @@ export function ModelSetup() {
       try {
         const serverUp = await api.isOllamaServerRunning();
         if (!serverUp) {
-          // Wait and retry — server may still be starting
           await new Promise((r) => setTimeout(r, 3000));
           const retry = await api.isOllamaServerRunning();
           if (!retry) {
@@ -31,8 +31,11 @@ export function ModelSetup() {
           }
         }
 
-        const hasModel = await api.isModelReady(MODEL_NAME);
-        if (!cancelled) setState(hasModel ? 'ready' : 'needs-download');
+        const [hasVision, hasEmbed] = await Promise.all([
+          api.isModelReady(VISION_MODEL),
+          api.isModelReady(EMBED_MODEL),
+        ]);
+        if (!cancelled) setState(hasVision && hasEmbed ? 'ready' : 'needs-download');
       } catch {
         if (!cancelled) setState('ready');
       }
@@ -46,10 +49,6 @@ export function ModelSetup() {
     if (state !== 'downloading') return;
     const unsub = api.onPullProgress((data: PullProgress) => {
       setProgress(data);
-      if (data.status === 'success') {
-        setState('done');
-        setTimeout(() => setState('ready'), 1500);
-      }
     });
     return unsub;
   }, [state]);
@@ -57,7 +56,12 @@ export function ModelSetup() {
   const handleDownload = async () => {
     setState('downloading');
     try {
-      await api.pullModel(MODEL_NAME);
+      const [hasVision, hasEmbed] = await Promise.all([
+        api.isModelReady(VISION_MODEL),
+        api.isModelReady(EMBED_MODEL),
+      ]);
+      if (!hasVision) await api.pullModel(VISION_MODEL);
+      if (!hasEmbed) await api.pullModel(EMBED_MODEL);
       setState('done');
       setTimeout(() => setState('ready'), 1500);
     } catch (err) {
@@ -95,8 +99,8 @@ export function ModelSetup() {
         {state === 'needs-download' && (
           <>
             <p className="text-sm text-gray-400 mb-6">
-              Muse uses a local AI model for auto-tagging and generating alt text.
-              This requires downloading the LLaVA model (~4.5 GB).
+              Muse uses local AI models for auto-tagging, alt text, and search:
+              LLaVA for vision (~4.5 GB) and nomic-embed-text for similarity (~274 MB).
             </p>
             <button
               onClick={handleDownload}
@@ -120,7 +124,7 @@ export function ModelSetup() {
         {state === 'downloading' && (
           <>
             <p className="text-sm text-gray-400 mb-4">
-              Downloading LLaVA model... This may take a few minutes.
+              Downloading {progress?.model === EMBED_MODEL ? 'embedding' : 'vision'} model... This may take a few minutes.
             </p>
             <div className="w-full bg-gray-800 rounded-full h-2 mb-2 overflow-hidden">
               <div

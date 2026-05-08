@@ -6,10 +6,9 @@ import { createImageRepo, type ImageFilter } from './database/repositories/image
 import { createTagRepo } from './database/repositories/tags';
 import { importFiles } from './importer';
 import { extractAndStoreColors, reindexAllThumbColorIndex } from './color-extractor';
-import { isOllamaRunning, unloadModel } from './ai/ollama-client';
+import { isOllamaRunning } from './ai/ollama-client';
 import { autoTagImage } from './ai/auto-tagger';
-import { isSidecarRunning, startSidecar, stopSidecar } from './ai/python-sidecar';
-import { searchByText, findSimilarImages, findSimilarImagesWithPreviews, warmImageEmbedding, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
+import { searchByText, findSimilarImagesWithPreviews, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
 import { parseSimilarRefineModes } from '../shared/similar-refine';
 import {
   loadSimilarityPrefs,
@@ -91,32 +90,37 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         }
       }
     }
-    // Queue AI tasks in background: run LLaVA first, then CLIP
+    // Queue AI tasks in background: LLaVA caption → caption embedding + pHash
     setTimeout(async () => {
       const win = BrowserWindow.getAllWindows()[0];
       const successful = results.filter((r) => r.success);
       const total = successful.length;
       if (total === 0) return;
 
-      // Phase 1: Auto-tag with LLaVA
-
+      // Phase 1: LLaVA caption (writes alt_text, notes, tags)
       for (let i = 0; i < successful.length; i++) {
-        win?.webContents.send('autotag:progress', { current: i, total, status: `Analyzing image ${i + 1} of ${total}...` });
+        win?.webContents.send('autotag:progress', {
+          current: i,
+          total,
+          status: `Analyzing image ${i + 1} of ${total}...`,
+        });
         await autoTagImage(db, successful[i].id).catch((err) => console.error('[import] auto-tag error:', err));
       }
-
       win?.webContents.send('autotag:progress', { current: total, total, status: 'Auto-tagging complete' });
 
-      // Unload LLaVA from GPU to free memory for CLIP
-      await unloadModel();
-
-      // Phase 2: Generate CLIP embeddings
-      for (const result of successful) {
-        const img = imageRepo.getById(result.id);
+      // Phase 2: Caption embedding + perceptual hash
+      for (let i = 0; i < successful.length; i++) {
+        win?.webContents.send('embedding:progress', {
+          current: i,
+          total,
+          status: `Indexing image ${i + 1} of ${total}...`,
+        });
+        const img = imageRepo.getById(successful[i].id);
         if (img) {
-          await generateAndStoreEmbedding(db, result.id, img.original_path).catch(() => {});
+          await generateAndStoreEmbedding(db, successful[i].id, img.original_path).catch((err) => console.warn('[embed] failed:', err));
         }
       }
+      win?.webContents.send('embedding:progress', { current: total, total, status: 'Indexing complete' });
     }, 100);
     return results;
   });
@@ -124,7 +128,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   // AI
   ipcMain.handle('ai:status', async () => ({
     ollama: await isOllamaRunning(),
-    sidecar: isSidecarRunning(),
   }));
 
   ipcMain.handle('ai:autoTag', async (_, imageId: string) => {
@@ -143,6 +146,10 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
       });
       try {
         await autoTagImage(db, imageIds[i]);
+        const img = imageRepo.getById(imageIds[i]);
+        if (img) {
+          await generateAndStoreEmbedding(db, imageIds[i], img.original_path).catch((err) => console.warn('[embed] failed:', err));
+        }
         processed++;
       } catch (err) {
         console.error('[reanalyze] error for', imageIds[i], err);
@@ -155,9 +162,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     });
     return { processed, total };
   });
-
-  ipcMain.handle('ai:startSidecar', () => startSidecar());
-  ipcMain.handle('ai:stopSidecar', () => stopSidecar());
 
   ipcMain.handle('ai:searchByText', async (_, query: string) => {
     return searchByText(db, query);

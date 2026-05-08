@@ -100,10 +100,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
 );
 `;
 
+/**
+ * Caption-text embeddings from Ollama's nomic-embed-text model (768-dim).
+ * Replaces the previous 512-dim CLIP image embeddings.
+ */
 const VECTOR_TABLE_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS image_embeddings USING vec0(
     image_id TEXT PRIMARY KEY,
-    embedding float[512]
+    embedding float[768]
 );
 `;
 
@@ -138,16 +142,53 @@ function ensureImagesHueBucketIndex(db: Database.Database): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_images_dominant_hue ON images(indexed_hue_bucket)');
 }
 
+/**
+ * sqlite-vec virtual tables don't expose their declared dim via PRAGMA, so we probe by inserting a zero
+ * vector of the new size and rolling back. If insertion fails, the existing table has a different dim
+ * and we drop & recreate it.
+ */
+function ensureEmbeddingTableDim(db: Database.Database, expectedDim: number): void {
+  const tableExists = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_embeddings'")
+    .get();
+  if (!tableExists) return;
+
+  const probeId = `__dim_probe__${Date.now()}`;
+  const zeros = new Array(expectedDim).fill(0);
+  try {
+    db.exec('BEGIN');
+    db.prepare('INSERT INTO image_embeddings (image_id, embedding) VALUES (?, ?)').run(
+      probeId,
+      JSON.stringify(zeros),
+    );
+    db.prepare('DELETE FROM image_embeddings WHERE image_id = ?').run(probeId);
+    db.exec('COMMIT');
+  } catch {
+    db.exec('ROLLBACK');
+    console.log('[schema] Embedding table dim mismatch — dropping and recreating for', expectedDim, 'dims');
+    db.exec('DROP TABLE image_embeddings');
+  }
+}
+
+function ensureImagesPhashColumn(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(images)').all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'phash')) {
+    db.exec('ALTER TABLE images ADD COLUMN phash BLOB');
+  }
+}
+
 const MIGRATIONS = [
   `ALTER TABLE images ADD COLUMN alt_text TEXT DEFAULT ''`,
 ];
 
 export function runMigrations(db: Database.Database): void {
   db.exec(SCHEMA_SQL);
+  ensureEmbeddingTableDim(db, 768);
   db.exec(VECTOR_TABLE_SQL);
   ensureImagesIndexedChromatic(db);
   ensureImagesHueIndex(db);
   ensureImagesHueBucketIndex(db);
+  ensureImagesPhashColumn(db);
 
   for (const migration of MIGRATIONS) {
     try {
