@@ -39,6 +39,10 @@ const api = {
   // Import
   importFiles: (filePaths: string[], folderId: string | null) =>
     ipcRenderer.invoke('import:files', filePaths, folderId),
+  importUrl: (url: string, folderId: string | null) =>
+    ipcRenderer.invoke('import:url', url, folderId),
+  importBuffer: (bytes: ArrayBuffer, filename: string, folderId: string | null, sourceUrl?: string) =>
+    ipcRenderer.invoke('import:buffer', { bytes, filename, sourceUrl }, folderId),
   openFileDialog: () => ipcRenderer.invoke('dialog:openFiles'),
 
   // Theme
@@ -119,27 +123,88 @@ window.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
   });
 
-  document.addEventListener('drop', (e) => {
+  document.addEventListener('drop', async (e) => {
     e.preventDefault();
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
+    const dt = e.dataTransfer;
+    if (!dt) return;
 
-    const paths: string[] = [];
-    for (let i = 0; i < files.length; i++) {
-      try {
-        const p = webUtils.getPathForFile(files[i]);
-        if (p) paths.push(p);
-      } catch (err) {
-        ipcRenderer.send('log', `[preload-drop] getPathForFile error: ${err}`);
+    const files = dt.files;
+    const localPaths: string[] = [];
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        try {
+          const p = webUtils.getPathForFile(files[i]);
+          if (p) localPaths.push(p);
+        } catch (err) {
+          ipcRenderer.send('log', `[preload-drop] getPathForFile error: ${err}`);
+        }
       }
     }
 
-    ipcRenderer.send('log', `[preload-drop] paths: ${JSON.stringify(paths)}, folder: ${currentFolderId}`);
-    if (paths.length > 0) {
-      ipcRenderer.invoke('import:files', paths, currentFolderId).then(() => {
-        ipcRenderer.send('log', '[preload-drop] import complete');
-        ipcRenderer.send('files-imported');
-      });
+    if (localPaths.length > 0) {
+      ipcRenderer.send('log', `[preload-drop] paths: ${JSON.stringify(localPaths)}, folder: ${currentFolderId}`);
+      await ipcRenderer.invoke('import:files', localPaths, currentFolderId);
+      ipcRenderer.send('log', '[preload-drop] file import complete');
+      ipcRenderer.send('files-imported');
+      return;
     }
+
+    // Browser drag: no local file path, look for URL payloads.
+    const urls = collectDroppedUrls(dt);
+    if (urls.length === 0) {
+      ipcRenderer.send('log', '[preload-drop] drop had no files or URLs');
+      return;
+    }
+
+    ipcRenderer.send('log', `[preload-drop] urls: ${JSON.stringify(urls)}, folder: ${currentFolderId}`);
+    for (const url of urls) {
+      try {
+        await ipcRenderer.invoke('import:url', url, currentFolderId);
+      } catch (err) {
+        ipcRenderer.send('log', `[preload-drop] url import error: ${err}`);
+      }
+    }
+    ipcRenderer.send('files-imported');
   });
 });
+
+/** Pull image URLs out of a browser drag — checks uri-list, x-moz-url, then HTML <img src>. */
+function collectDroppedUrls(dt: DataTransfer): string[] {
+  const out: string[] = [];
+
+  const uriList = dt.getData('text/uri-list');
+  if (uriList) {
+    for (const line of uriList.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) out.push(trimmed);
+    }
+  }
+
+  if (out.length === 0) {
+    const mozUrl = dt.getData('text/x-moz-url');
+    if (mozUrl) {
+      // Firefox emits "<url>\n<title>" pairs; we only want the URLs.
+      const lines = mozUrl.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i += 2) {
+        const trimmed = lines[i].trim();
+        if (trimmed) out.push(trimmed);
+      }
+    }
+  }
+
+  if (out.length === 0) {
+    const html = dt.getData('text/html');
+    if (html) {
+      const re = /<img[^>]+src=["']([^"']+)["']/gi;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(html)) !== null) out.push(m[1]);
+    }
+  }
+
+  if (out.length === 0) {
+    const text = dt.getData('text/plain').trim();
+    if (/^https?:\/\//i.test(text) || text.startsWith('data:')) out.push(text);
+  }
+
+  return out.filter((u) => /^https?:\/\//i.test(u) || u.startsWith('data:'));
+}

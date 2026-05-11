@@ -4,7 +4,7 @@ import { useAppStore, type Folder } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
 export function Sidebar() {
-  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, createFolder, deleteFolder, refreshAll, draggingImageId } = useAppStore();
+  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, createFolder, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder } = useAppStore();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -65,7 +65,12 @@ export function Sidebar() {
     e.preventDefault();
     e.stopPropagation();
     setDropTargetId(null);
-    if (draggingImageId) {
+    if (!draggingImageId) return;
+
+    // If the dragged image is part of an active bulk selection, move them all.
+    if (selectedImageIds.size > 1 && selectedImageIds.has(draggingImageId)) {
+      await bulkMoveToFolder(Array.from(selectedImageIds), folderId);
+    } else {
       await api.updateImage(draggingImageId, { folder_id: folderId });
       refreshAll();
     }
@@ -258,7 +263,7 @@ export function Sidebar() {
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700 transition-colors"
             onClick={() => {
               const folder = folders.find((f) => f.id === contextMenu.folderId);
               if (folder) {
@@ -268,18 +273,18 @@ export function Sidebar() {
               setContextMenu(null);
             }}
           >
-            <Pencil size={12} />
-            Rename
+            <Pencil size={12} className="shrink-0" />
+            <span className="flex-1">Rename</span>
           </button>
           <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-red-400 hover:bg-gray-700 transition-colors"
             onClick={() => {
               deleteFolder(contextMenu.folderId);
               setContextMenu(null);
             }}
           >
-            <Trash size={12} />
-            Delete
+            <Trash size={12} className="shrink-0" />
+            <span className="flex-1">Delete</span>
           </button>
         </div>
       )}
@@ -290,24 +295,24 @@ export function Sidebar() {
           style={{ left: trashContextMenu.x, top: trashContextMenu.y }}
         >
           <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700 transition-colors"
             onClick={async () => {
               await api.restoreAllTrashed();
               refreshAll();
               setTrashContextMenu(null);
             }}
           >
-            Restore All
+            <span className="flex-1">Restore All</span>
           </button>
           <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-red-400 hover:bg-gray-700 transition-colors"
             onClick={async () => {
               await api.emptyTrash();
               refreshAll();
               setTrashContextMenu(null);
             }}
           >
-            Empty Trash
+            <span className="flex-1">Empty Trash</span>
           </button>
         </div>
       )}

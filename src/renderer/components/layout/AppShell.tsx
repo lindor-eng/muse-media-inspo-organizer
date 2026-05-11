@@ -14,8 +14,18 @@ export function AppShell() {
   useEffect(() => {
     let dragCounter = 0;
 
-    const isExternalDrag = (e: DragEvent) =>
-      e.dataTransfer?.types.includes('Files') && !e.dataTransfer.types.includes('application/x-muse-image');
+    const isExternalDrag = (e: DragEvent) => {
+      const types = e.dataTransfer?.types;
+      if (!types) return false;
+      if (types.includes('application/x-muse-image')) return false;
+      // Local file drag, browser image drag (uri-list / html / x-moz-url), or pasted URL string.
+      return (
+        types.includes('Files') ||
+        types.includes('text/uri-list') ||
+        types.includes('text/x-moz-url') ||
+        types.includes('text/html')
+      );
+    };
 
     const handleDragEnter = (e: DragEvent) => {
       e.preventDefault();
@@ -44,10 +54,49 @@ export function AppShell() {
       setIsDragging(false);
     };
 
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+      return target.isContentEditable;
+    };
+
+    const handlePaste = async (e: ClipboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      const cd = e.clipboardData;
+      if (!cd) return;
+
+      // 1) Image bytes on the clipboard (e.g. screenshot, "Copy Image" from browser).
+      const items = Array.from(cd.items);
+      const imageItem = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'));
+      if (imageItem) {
+        const file = imageItem.getAsFile();
+        if (file) {
+          e.preventDefault();
+          const buffer = await file.arrayBuffer();
+          const filename = file.name && file.name !== 'image.png'
+            ? file.name
+            : `clipboard-${Date.now()}.${file.type.split('/')[1] || 'png'}`;
+          await window.electronAPI.importBuffer(buffer, filename, null);
+          refreshAll();
+          return;
+        }
+      }
+
+      // 2) URL on the clipboard.
+      const text = cd.getData('text/plain').trim();
+      if (text && (/^https?:\/\//i.test(text) || text.startsWith('data:'))) {
+        e.preventDefault();
+        await window.electronAPI.importUrl(text, null);
+        refreshAll();
+      }
+    };
+
     document.addEventListener('dragenter', handleDragEnter);
     document.addEventListener('dragleave', handleDragLeave);
     document.addEventListener('dragover', handleDragOver);
     document.addEventListener('drop', handleDrop);
+    document.addEventListener('paste', handlePaste);
 
     const cleanup = api.onFilesImported(() => {
       refreshAll();
@@ -58,6 +107,7 @@ export function AppShell() {
       document.removeEventListener('dragleave', handleDragLeave);
       document.removeEventListener('dragover', handleDragOver);
       document.removeEventListener('drop', handleDrop);
+      document.removeEventListener('paste', handlePaste);
       cleanup();
     };
   }, [refreshAll]);

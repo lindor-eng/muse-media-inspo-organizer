@@ -4,7 +4,7 @@ import { nativeImage, clipboard, BrowserWindow } from 'electron';
 import { createFolderRepo } from './database/repositories/folders';
 import { createImageRepo, type ImageFilter } from './database/repositories/images';
 import { createTagRepo } from './database/repositories/tags';
-import { importFiles } from './importer';
+import { importFiles, importFromUrl, importFromBuffer, type ImportResult } from './importer';
 import { extractAndStoreColors, reindexAllThumbColorIndex } from './color-extractor';
 import { isOllamaRunning } from './ai/ollama-client';
 import { autoTagImage } from './ai/auto-tagger';
@@ -78,9 +78,7 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   });
 
   // Import
-  ipcMain.handle('import:files', async (_, filePaths: string[], folderId: string | null) => {
-    console.log('[import:files] called with paths:', filePaths);
-    const results = await importFiles(db, filePaths, folderId);
+  async function enrichImportResults(results: ImportResult[]): Promise<void> {
     for (const result of results) {
       if (result.success && result.thumbnail_path) {
         try {
@@ -97,7 +95,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
       const total = successful.length;
       if (total === 0) return;
 
-      // Phase 1: LLaVA caption (writes alt_text, notes, tags)
       for (let i = 0; i < successful.length; i++) {
         win?.webContents.send('autotag:progress', {
           current: i,
@@ -108,7 +105,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
       }
       win?.webContents.send('autotag:progress', { current: total, total, status: 'Auto-tagging complete' });
 
-      // Phase 2: Caption embedding + perceptual hash
       for (let i = 0; i < successful.length; i++) {
         win?.webContents.send('embedding:progress', {
           current: i,
@@ -122,8 +118,33 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
       }
       win?.webContents.send('embedding:progress', { current: total, total, status: 'Indexing complete' });
     }, 100);
+  }
+
+  ipcMain.handle('import:files', async (_, filePaths: string[], folderId: string | null) => {
+    console.log('[import:files] called with paths:', filePaths);
+    const results = await importFiles(db, filePaths, folderId);
+    await enrichImportResults(results);
     return results;
   });
+
+  ipcMain.handle('import:url', async (_, url: string, folderId: string | null) => {
+    console.log('[import:url] called with url:', url);
+    const result = await importFromUrl(db, url, folderId);
+    await enrichImportResults([result]);
+    return result;
+  });
+
+  ipcMain.handle(
+    'import:buffer',
+    async (_, payload: { bytes: ArrayBuffer | Uint8Array; filename: string; sourceUrl?: string }, folderId: string | null) => {
+      const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
+      const buffer = Buffer.from(bytes);
+      console.log('[import:buffer] called with', payload.filename, buffer.length, 'bytes');
+      const result = await importFromBuffer(db, buffer, payload.filename, folderId, payload.sourceUrl);
+      await enrichImportResults([result]);
+      return result;
+    },
+  );
 
   // AI
   ipcMain.handle('ai:status', async () => ({

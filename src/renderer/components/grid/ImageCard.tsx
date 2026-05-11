@@ -187,11 +187,11 @@ export function ImageCard({ image }: Props) {
           )}
 
           <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700 transition-colors"
             onClick={() => setSubMenu(subMenu === 'tags' ? null : 'tags')}
           >
-            <Tag size={12} />
-            Add Tag
+            <Tag size={12} className="shrink-0" />
+            <span className="flex-1">Add Tag</span>
           </button>
           {subMenu === 'tags' && (
             <div className="px-2 py-1 border-t border-gray-700">
@@ -235,11 +235,11 @@ export function ImageCard({ image }: Props) {
           )}
 
           <button
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700 transition-colors"
             onClick={() => setSubMenu(subMenu === 'folders' ? null : 'folders')}
           >
-            <FolderOpen size={12} />
-            Move to Folder
+            <FolderOpen size={12} className="shrink-0" />
+            <span className="flex-1">Move to Folder</span>
           </button>
           {subMenu === 'folders' && (
             <div className="px-2 py-1 border-t border-gray-700 max-h-32 overflow-y-auto">
@@ -262,30 +262,30 @@ export function ImageCard({ image }: Props) {
 
           {!image.is_trashed && (
             <button
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700 transition-colors"
               onClick={handleReanalyze}
             >
-              <Sparkles size={12} />
-              {showBulkLabel ? `Re-analyze ${selectionCount} images` : 'Re-analyze'}
+              <Sparkles size={12} className="shrink-0" />
+              <span className="flex-1">{showBulkLabel ? `Re-analyze ${selectionCount} images` : 'Re-analyze'}</span>
             </button>
           )}
 
           <div className="border-t border-gray-700 mt-1 pt-1">
             {!!image.is_trashed && (
               <button
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-green-400 hover:bg-gray-700 transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-green-400 hover:bg-gray-700 transition-colors"
                 onClick={handleRestore}
               >
-                <RotateCcw size={12} />
-                Restore
+                <RotateCcw size={12} className="shrink-0" />
+                <span className="flex-1">Restore</span>
               </button>
             )}
             <button
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left text-red-400 hover:bg-gray-700 transition-colors"
               onClick={handleTrashOrDelete}
             >
-              <Trash2 size={12} />
-              {image.is_trashed ? 'Delete permanently' : 'Move to Trash'}
+              <Trash2 size={12} className="shrink-0" />
+              <span className="flex-1">{image.is_trashed ? 'Delete permanently' : 'Move to Trash'}</span>
             </button>
           </div>
         </div>
