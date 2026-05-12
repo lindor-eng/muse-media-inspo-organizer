@@ -74,13 +74,12 @@ async function persistImage(
     /** File extension (lower-case, with dot) used for the storage filename. */
     ext: string;
     folderId: string | null;
-    sourceUrl?: string;
     /** When importing from a real file, preserve original timestamps. */
     fileCreatedAt?: string | null;
     fileModifiedAt?: string | null;
   }
 ): Promise<ImportResult> {
-  const { buffer, displayFilename, ext, folderId, sourceUrl, fileCreatedAt, fileModifiedAt } = args;
+  const { buffer, displayFilename, ext, folderId, fileCreatedAt, fileModifiedAt } = args;
 
   const hash = hashBuffer(buffer);
   const imageRepo = createImageRepo(db);
@@ -125,10 +124,6 @@ async function persistImage(
     file_created_at: fileCreatedAt ?? null,
     file_modified_at: fileModifiedAt ?? null,
   });
-
-  if (sourceUrl) {
-    imageRepo.update(image.id, { source_url: sourceUrl });
-  }
 
   return { id: image.id, filename: displayFilename, thumbnail_path: thumbPath, success: true };
 }
@@ -217,7 +212,6 @@ export async function importFromUrl(
         displayFilename: `clipboard${ext}`,
         ext,
         folderId,
-        sourceUrl: '',
       });
     }
 
@@ -242,7 +236,6 @@ export async function importFromUrl(
       displayFilename: filename,
       ext,
       folderId,
-      sourceUrl: trimmed,
     });
   } catch (err) {
     return { id: '', filename: trimmed, thumbnail_path: '', success: false, error: String(err) };
@@ -254,7 +247,6 @@ export async function importFromBuffer(
   buffer: Buffer,
   filename: string,
   folderId: string | null = null,
-  sourceUrl?: string
 ): Promise<ImportResult> {
   const extFromName = path.extname(filename).toLowerCase();
   const ext = SUPPORTED_EXTENSIONS.has(extFromName) ? extFromName : '.png';
@@ -264,6 +256,5 @@ export async function importFromBuffer(
     displayFilename: safeName,
     ext,
     folderId,
-    sourceUrl,
   });
 }

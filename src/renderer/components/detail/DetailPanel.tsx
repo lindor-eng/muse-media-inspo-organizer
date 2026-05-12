@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { X, Star, ExternalLink, Trash2, RotateCcw, Plus, Pencil } from 'lucide-react';
+import { X, Star, Trash2, RotateCcw, Plus, Pencil } from 'lucide-react';
 import { useAppStore, type ImageRecord, type ImageColor } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
@@ -197,18 +197,6 @@ export function DetailPanel() {
             </p>
           )}
         </div>
-
-        {displayImage.source_url && (
-          <div className="px-4 pb-3">
-            <a
-              href={displayImage.source_url}
-              className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 truncate"
-            >
-              <ExternalLink size={10} />
-              {displayImage.source_url}
-            </a>
-          </div>
-        )}
 
         <div className="px-4 pb-3">
           <div className="flex items-center justify-between mb-1.5">

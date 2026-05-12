@@ -78,6 +78,59 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   });
 
   // Import
+  // Singleton AI pipeline so concurrent imports never run LLaVA / Ollama in parallel.
+  // New images enqueued mid-run extend the in-flight totals instead of starting a second drainer.
+  const aiQueue: string[] = [];
+  let aiTotal = 0;
+  let aiCompleted = 0;
+  let aiDraining = false;
+
+  function broadcastAutotag(status: string): void {
+    const win = BrowserWindow.getAllWindows()[0];
+    win?.webContents.send('autotag:progress', { current: aiCompleted, total: aiTotal, status });
+  }
+
+  function broadcastEmbedding(status: string): void {
+    const win = BrowserWindow.getAllWindows()[0];
+    win?.webContents.send('embedding:progress', { current: aiCompleted, total: aiTotal, status });
+  }
+
+  async function drainAiQueue(): Promise<void> {
+    if (aiDraining) return;
+    aiDraining = true;
+    try {
+      while (aiQueue.length > 0) {
+        const id = aiQueue.shift()!;
+        const idx = aiCompleted + 1;
+        broadcastAutotag(`Analyzing image ${idx} of ${aiTotal}...`);
+        try {
+          await autoTagImage(db, id);
+        } catch (err) {
+          console.error('[ai-queue] auto-tag error:', err);
+        }
+
+        broadcastEmbedding(`Indexing image ${idx} of ${aiTotal}...`);
+        const img = imageRepo.getById(id);
+        if (img) {
+          await generateAndStoreEmbedding(db, id, img.original_path).catch((err) =>
+            console.warn('[ai-queue] embed failed:', err),
+          );
+        }
+
+        aiCompleted++;
+        broadcastAutotag(aiCompleted >= aiTotal ? 'Auto-tagging complete' : `Analyzed ${aiCompleted} of ${aiTotal}`);
+        broadcastEmbedding(aiCompleted >= aiTotal ? 'Indexing complete' : `Indexed ${aiCompleted} of ${aiTotal}`);
+      }
+    } finally {
+      aiDraining = false;
+      // Reset counters once the queue fully drains so the next batch starts fresh at 0/N.
+      if (aiQueue.length === 0) {
+        aiTotal = 0;
+        aiCompleted = 0;
+      }
+    }
+  }
+
   async function enrichImportResults(results: ImportResult[]): Promise<void> {
     for (const result of results) {
       if (result.success && result.thumbnail_path) {
@@ -88,36 +141,20 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         }
       }
     }
-    // Queue AI tasks in background: LLaVA caption → caption embedding + pHash
-    setTimeout(async () => {
-      const win = BrowserWindow.getAllWindows()[0];
-      const successful = results.filter((r) => r.success);
-      const total = successful.length;
-      if (total === 0) return;
 
-      for (let i = 0; i < successful.length; i++) {
-        win?.webContents.send('autotag:progress', {
-          current: i,
-          total,
-          status: `Analyzing image ${i + 1} of ${total}...`,
-        });
-        await autoTagImage(db, successful[i].id).catch((err) => console.error('[import] auto-tag error:', err));
-      }
-      win?.webContents.send('autotag:progress', { current: total, total, status: 'Auto-tagging complete' });
+    const successfulIds = results.filter((r) => r.success).map((r) => r.id);
+    if (successfulIds.length === 0) return;
 
-      for (let i = 0; i < successful.length; i++) {
-        win?.webContents.send('embedding:progress', {
-          current: i,
-          total,
-          status: `Indexing image ${i + 1} of ${total}...`,
-        });
-        const img = imageRepo.getById(successful[i].id);
-        if (img) {
-          await generateAndStoreEmbedding(db, successful[i].id, img.original_path).catch((err) => console.warn('[embed] failed:', err));
-        }
-      }
-      win?.webContents.send('embedding:progress', { current: total, total, status: 'Indexing complete' });
-    }, 100);
+    aiQueue.push(...successfulIds);
+    aiTotal += successfulIds.length;
+    // Surface the new total immediately so the toast ticks up before the worker reaches the new item.
+    broadcastAutotag(`Analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+
+    if (!aiDraining) {
+      setTimeout(() => {
+        void drainAiQueue();
+      }, 100);
+    }
   }
 
   ipcMain.handle('import:files', async (_, filePaths: string[], folderId: string | null) => {
@@ -136,11 +173,11 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
 
   ipcMain.handle(
     'import:buffer',
-    async (_, payload: { bytes: ArrayBuffer | Uint8Array; filename: string; sourceUrl?: string }, folderId: string | null) => {
+    async (_, payload: { bytes: ArrayBuffer | Uint8Array; filename: string }, folderId: string | null) => {
       const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
       const buffer = Buffer.from(bytes);
       console.log('[import:buffer] called with', payload.filename, buffer.length, 'bytes');
-      const result = await importFromBuffer(db, buffer, payload.filename, folderId, payload.sourceUrl);
+      const result = await importFromBuffer(db, buffer, payload.filename, folderId);
       await enrichImportResults([result]);
       return result;
     },
@@ -156,32 +193,28 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   });
 
   ipcMain.handle('ai:reanalyzeImages', async (_, imageIds: string[]) => {
-    const win = BrowserWindow.getAllWindows()[0];
-    const total = imageIds.length;
-    let processed = 0;
-    for (let i = 0; i < imageIds.length; i++) {
-      win?.webContents.send('autotag:progress', {
-        current: i,
-        total,
-        status: total > 1 ? `Re-analyzing ${i + 1} of ${total}...` : 'Re-analyzing image...',
-      });
-      try {
-        await autoTagImage(db, imageIds[i]);
-        const img = imageRepo.getById(imageIds[i]);
-        if (img) {
-          await generateAndStoreEmbedding(db, imageIds[i], img.original_path).catch((err) => console.warn('[embed] failed:', err));
-        }
-        processed++;
-      } catch (err) {
-        console.error('[reanalyze] error for', imageIds[i], err);
-      }
+    if (imageIds.length === 0) return { processed: 0, total: 0 };
+
+    // Re-analysis shares the singleton queue; we capture our slice's "done" target so the
+    // renderer can await fresh metadata before it refreshes the detail panel.
+    const myTarget = aiCompleted + (aiQueue.length + imageIds.length);
+    aiQueue.push(...imageIds);
+    aiTotal += imageIds.length;
+    broadcastAutotag(`Re-analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+
+    if (!aiDraining) {
+      void drainAiQueue();
     }
-    win?.webContents.send('autotag:progress', {
-      current: total,
-      total,
-      status: 'Re-analysis complete',
-    });
-    return { processed, total };
+
+    while (aiCompleted < myTarget) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      // aiCompleted resets to 0 when the queue fully drains. If our target was already passed
+      // before the reset, the loop above already exited; if not, the reset means everything queued
+      // up to and including our slice is done.
+      if (!aiDraining && aiQueue.length === 0) break;
+    }
+
+    return { processed: imageIds.length, total: imageIds.length };
   });
 
   ipcMain.handle('ai:searchByText', async (_, query: string) => {

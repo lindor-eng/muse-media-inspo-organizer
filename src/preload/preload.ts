@@ -41,8 +41,8 @@ const api = {
     ipcRenderer.invoke('import:files', filePaths, folderId),
   importUrl: (url: string, folderId: string | null) =>
     ipcRenderer.invoke('import:url', url, folderId),
-  importBuffer: (bytes: ArrayBuffer, filename: string, folderId: string | null, sourceUrl?: string) =>
-    ipcRenderer.invoke('import:buffer', { bytes, filename, sourceUrl }, folderId),
+  importBuffer: (bytes: ArrayBuffer, filename: string, folderId: string | null) =>
+    ipcRenderer.invoke('import:buffer', { bytes, filename }, folderId),
   openFileDialog: () => ipcRenderer.invoke('dialog:openFiles'),
 
   // Theme

@@ -50,3 +50,61 @@ body {
 .animate-fade-in {
   animation: fade-in 200ms ease-out forwards;
 }
+
+/* Subtle scale pulse on the toast card when a new image joins the queue. */
+@keyframes toast-pulse {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+.animate-toast-pulse {
+  /* Symmetric ease-in-out so motion glides through the apex instead of pausing on it. */
+  animation: toast-pulse 600ms cubic-bezier(0.4, 0, 0.4, 1);
+}
+
+/* Apple-Intelligence-style flowing gradient halo that wraps the toast.
+   A wide multi-stop linear gradient slides horizontally; blur turns it into a soft outer rim
+   that reads as continuous color flow, not a hard ring. Stays on while the toast is visible. */
+@keyframes ai-glow-flow {
+  0%   { background-position:   0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.ai-glow-base,
+.ai-glow-burst {
+  position: absolute;
+  inset: -5px;
+  border-radius: 0.75rem;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(251, 146, 60, 1)  0%,
+      rgba(244, 63, 94,  1)  18%,
+      rgba(217, 70, 239, 1)  36%,
+      rgba(139, 92, 246, 1)  54%,
+      rgba(96, 165, 250, 1)  72%,
+      rgba(251, 146, 60, 1) 100%
+    );
+  background-size: 200% 100%;
+  animation: ai-glow-flow 2.4s linear infinite;
+}
+
+/* Persistent base halo: subtle, present whenever the toast is on screen. */
+.ai-glow-base {
+  filter: blur(8px);
+  opacity: 0.7;
+}
+
+/* One-shot burst: matches the 200ms pulse curve so the blur expand/contract syncs with the
+   card's scale expand/contract. Forwards to opacity 0 so the burst layer disappears between events. */
+@keyframes ai-glow-burst {
+  0%   { filter: blur(8px);  opacity: 0;   }
+  50%  { filter: blur(32px); opacity: 1;   }
+  100% { filter: blur(8px);  opacity: 0;   }
+}
+.ai-glow-burst {
+  opacity: 0;
+  animation:
+    ai-glow-flow 2.4s linear infinite,
+    ai-glow-burst 600ms cubic-bezier(0.4, 0, 0.4, 1) forwards;
+}
