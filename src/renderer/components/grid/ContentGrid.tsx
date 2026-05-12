@@ -2,6 +2,7 @@ import { useCallback, useEffect } from 'react';
 import { Search, Plus, Import, Loader2, Grid2x2, Grid3x3 } from 'lucide-react';
 import { useAppStore, GRID_THUMB_MIN, GRID_THUMB_MAX } from '../../stores/app-store';
 import { ImageCard } from './ImageCard';
+import { EmbeddingProgress } from '../layout/EmbeddingProgress';
 
 export function ContentGrid() {
   const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus, selectedImageIds, clearSelection, gridThumbHeight, setGridThumbHeight } = useAppStore();
@@ -109,8 +110,10 @@ export function ContentGrid() {
         </button>
       </div>
 
-      {/* Grid */}
-      <div className="flex-1 overflow-y-auto p-4">
+      {/* Grid wrapper: stays a positioning context for the toast (which lives below as a sibling
+          of the scroll container, so it doesn't move with grid scroll). */}
+      <div className="flex-1 relative min-h-0">
+        <div data-grid-canvas className="absolute inset-0 overflow-y-auto p-4">
         {isImporting && (
           <div className="mb-4 px-4 py-3 bg-blue-900/30 border border-blue-800 rounded-lg text-sm text-blue-300 flex items-center gap-2">
             <Import size={14} className="animate-pulse" />
@@ -131,6 +134,11 @@ export function ContentGrid() {
             ))}
           </div>
         )}
+        </div>
+        {/* Toast sits inside the canvas-positioning wrapper but outside the scroll container,
+            so it stays bottom-centered on the visible canvas regardless of sidebar / detail panel
+            state and doesn't scroll with the grid. */}
+        <EmbeddingProgress />
       </div>
     </main>
   );

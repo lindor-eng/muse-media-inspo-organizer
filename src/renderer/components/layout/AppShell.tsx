@@ -3,7 +3,6 @@ import { Sidebar } from '../sidebar/Sidebar';
 import { ContentGrid } from '../grid/ContentGrid';
 import { DetailPanel } from '../detail/DetailPanel';
 import { ImageFocus } from '../grid/ImageFocus';
-import { EmbeddingProgress } from './EmbeddingProgress';
 import { useAppStore } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
@@ -122,7 +121,6 @@ export function AppShell() {
       <div className="flex-1 relative min-w-0 overflow-hidden">
         <ContentGrid />
         {selectedImageId && <ImageFocus />}
-        <EmbeddingProgress />
       </div>
       <DetailPanel />
       {isDragging && (

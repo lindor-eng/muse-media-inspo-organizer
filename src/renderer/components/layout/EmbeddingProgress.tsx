@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Sparkles, Brain } from 'lucide-react';
 
 interface ProgressState {
@@ -21,8 +22,32 @@ export function EmbeddingProgress() {
   const [visible, setVisible] = useState(false);
   /** Bumped each time the queue grows — drives the re-mount of the pulse + glow animations. */
   const [flourishKey, setFlourishKey] = useState(0);
+  /** Measured visible canvas bounds — drives portal positioning so the toast cannot drift. */
+  const [coords, setCoords] = useState<{ centerX: number; bottom: number } | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTotal = useRef(0);
+
+  // Position via portal, measuring the actual on-screen canvas every animation frame while visible.
+  // This bypasses every flex-layout edge case — we just read getBoundingClientRect.
+  useEffect(() => {
+    if (!visible) return;
+    let raf = 0;
+    const tick = () => {
+      const el = document.querySelector('[data-grid-canvas]') as HTMLElement | null;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        setCoords((prev) => {
+          const cx = r.left + r.width / 2;
+          const b = window.innerHeight - r.bottom;
+          if (prev && Math.abs(prev.centerX - cx) < 0.5 && Math.abs(prev.bottom - b) < 0.5) return prev;
+          return { centerX: cx, bottom: b };
+        });
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [visible]);
 
   useEffect(() => {
     const onProgress = (data: { current: number; total: number; status: string }, type: 'autotag' | 'embedding') => {
@@ -58,15 +83,22 @@ export function EmbeddingProgress() {
     return () => { cleanupAutotag(); cleanupEmbedding(); };
   }, []);
 
-  if (!progress || !visible) return null;
+  if (!progress || !visible || !coords) return null;
 
   const percentage = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
   const isDone = progress.current >= progress.total && progress.total > 0;
   const remaining = progress.total - progress.current;
 
-  return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 animate-fade-in">
-      <div className="relative">
+  return createPortal(
+    <div
+      className="fixed z-50"
+      style={{
+        left: coords.centerX,
+        bottom: coords.bottom + 24,
+        transform: 'translateX(-50%)',
+      }}
+    >
+      <div className="relative animate-fade-in-y">
         {/* Persistent gradient halo — flows continuously the entire time the toast is up. */}
         <div className="ai-glow-base" aria-hidden />
         {/* One-shot burst layer that expands the blur in sync with the card's scale pulse;
@@ -100,6 +132,7 @@ export function EmbeddingProgress() {
           </p>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
