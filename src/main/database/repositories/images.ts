@@ -46,6 +46,8 @@ export interface ImageFilter {
   file_type?: string;
   search?: string;
   tag_ids?: string[];
+  /** True → only images with zero rows in image_tags. */
+  untagged?: boolean;
 }
 
 export function createImageRepo(db: Database.Database) {
@@ -115,6 +117,10 @@ export function createImageRepo(db: Database.Database) {
         const placeholders = filter.tag_ids.map(() => '?').join(',');
         conditions.push(`i.id IN (SELECT image_id FROM image_tags WHERE tag_id IN (${placeholders}))`);
         params.push(...filter.tag_ids);
+      }
+
+      if (filter.untagged) {
+        conditions.push('i.id NOT IN (SELECT image_id FROM image_tags)');
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

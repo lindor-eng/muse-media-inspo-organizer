@@ -404,6 +404,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         break;
       case 'untagged':
         filter.is_trashed = false;
+        filter.untagged = true;
         break;
     }
 
