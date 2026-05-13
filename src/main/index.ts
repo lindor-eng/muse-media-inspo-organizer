@@ -4,6 +4,7 @@ import started from 'electron-squirrel-startup';
 import { initDatabase } from './database/connection';
 import { registerIpcHandlers } from './ipc-handlers';
 import { startOllamaServer, stopOllamaServer, isModelAvailable, pullModel, type PullProgress } from './ai/ollama-server';
+import { backfillMissingPalettes } from './color-extractor';
 
 if (started) app.quit();
 
@@ -60,6 +61,17 @@ app.on('ready', async () => {
   } catch (err) {
     console.error('[app] Failed to start Ollama server:', err);
   }
+
+  // Silently backfill missing color palettes so the colors-refine filter has data for
+  // older imports without forcing the user to re-analyze. Runs once per launch on a
+  // delayed timer so it doesn't compete with the initial render.
+  setTimeout(() => {
+    backfillMissingPalettes(db)
+      .then(({ scanned, backfilled }) => {
+        if (scanned > 0) console.log(`[palettes] backfilled ${backfilled}/${scanned} missing rows`);
+      })
+      .catch((err) => console.warn('[palettes] backfill failed:', err));
+  }, 5000);
 });
 
 app.on('window-all-closed', () => {

@@ -403,8 +403,13 @@ export function ImageFocus() {
         />
       )}
       {toast && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg shadow-xl text-sm text-gray-200 animate-fade-in">
-          Copied to clipboard
+        <div
+          className="absolute bottom-6 left-1/2 z-50"
+          style={{ transform: 'translateX(-50%)' }}
+        >
+          <div className="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg shadow-xl text-sm text-gray-200 animate-fade-in-y">
+            Copied to clipboard
+          </div>
         </div>
       )}
     </main>

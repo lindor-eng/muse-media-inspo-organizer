@@ -335,3 +335,40 @@ export async function reindexAllIndexedChromatic(db: Database.Database) {
   const r = await reindexAllThumbColorIndex(db);
   return { scanned: r.scanned, updated: r.chromaticWritten };
 }
+
+/**
+ * Silently extract palettes for any image that is missing rows in image_colors.
+ * Designed to run in the background during startup so the colors-refine filter has
+ * data for older or previously-failed imports without blocking the UI.
+ *
+ * Yields to the event loop between every image so it never starves the main thread.
+ */
+export async function backfillMissingPalettes(db: Database.Database): Promise<{ scanned: number; backfilled: number }> {
+  const rows = db
+    .prepare(
+      `
+    SELECT i.id, i.thumbnail_path
+    FROM images i
+    LEFT JOIN image_colors c ON c.image_id = i.id
+    WHERE i.is_trashed = 0
+      AND i.thumbnail_path IS NOT NULL
+      AND length(trim(i.thumbnail_path)) > 0
+      AND c.image_id IS NULL
+    GROUP BY i.id
+    `,
+    )
+    .all() as Array<{ id: string; thumbnail_path: string }>;
+
+  let backfilled = 0;
+  for (const row of rows) {
+    try {
+      await extractAndStoreColors(db, row.id, row.thumbnail_path);
+      backfilled++;
+    } catch {
+      // Skip — likely an unreadable thumbnail. Logged elsewhere if needed.
+    }
+    // Yield aggressively so the renderer stays smooth during a fresh launch.
+    await new Promise<void>((r) => setImmediate(r));
+  }
+  return { scanned: rows.length, backfilled };
+}

@@ -115,6 +115,11 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
           await generateAndStoreEmbedding(db, id, img.original_path).catch((err) =>
             console.warn('[ai-queue] embed failed:', err),
           );
+          if (img.thumbnail_path) {
+            await extractAndStoreColors(db, id, img.thumbnail_path).catch((err) =>
+              console.warn('[ai-queue] color extract failed:', err),
+            );
+          }
         }
 
         aiCompleted++;
@@ -255,8 +260,20 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
 
 
   // Clipboard
-  ipcMain.handle('clipboard:copyImage', (_, filePath: string) => {
-    const img = nativeImage.createFromPath(filePath);
+  ipcMain.handle('clipboard:copyImage', async (_, filePath: string) => {
+    // Try the native loader first (PNG/JPEG/GIF/BMP). It returns an empty image for formats
+    // Electron doesn't decode (notably WebP), in which case fall back to sharp → PNG bytes.
+    let img = nativeImage.createFromPath(filePath);
+    if (img.isEmpty()) {
+      try {
+        const sharp = (await import('sharp')).default;
+        const pngBuffer = await sharp(filePath).png().toBuffer();
+        img = nativeImage.createFromBuffer(pngBuffer);
+      } catch (err) {
+        console.warn('[clipboard:copyImage] sharp fallback failed:', err);
+        return false;
+      }
+    }
     if (img.isEmpty()) return false;
     clipboard.writeImage(img);
     return true;

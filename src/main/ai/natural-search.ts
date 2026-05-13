@@ -5,7 +5,7 @@ import { embedText, isOllamaRunning } from './ollama-client';
 import { phashSimilarity, phashHamming, blobToPhash, computePHash, phashToBlob } from './phash';
 import { likenessDisplayPercentRounded } from '../../shared/visual-similarity';
 import { dominantHueAxisMultiplier, dualDominantHueBoost, hueBinRingSteps } from '../../shared/image-color-index';
-import { persistThumbColorIndex } from '../color-extractor';
+import { persistThumbColorIndex, extractAndStoreColors } from '../color-extractor';
 import type { SimilarRefineMode } from '../../shared/similar-refine';
 import {
   loadSimilarityPrefs,
@@ -355,7 +355,17 @@ export async function findSimilarImagesWithPreviews(
   const paletteStmt = db.prepare(
     'SELECT hex_color, percentage FROM image_colors WHERE image_id = ? ORDER BY sort_order LIMIT 14',
   );
-  const srcPalette = paletteStmt.all(imageId) as PaletteRow[];
+  let srcPalette = paletteStmt.all(imageId) as PaletteRow[];
+  // Lazy-backfill the focal image's palette so colors-refine has something to compare against.
+  // Without this, libraries imported pre-colors-feature silently degrade to caption-only ranking.
+  if (colorsRefine && srcPalette.length === 0 && srcRecord.thumbnail_path) {
+    try {
+      await extractAndStoreColors(db, imageId, srcRecord.thumbnail_path);
+      srcPalette = paletteStmt.all(imageId) as PaletteRow[];
+    } catch {
+      // Non-critical; fall through with empty palette and the colors-refine block becomes a no-op.
+    }
+  }
 
   let focalHueBucket: number | null =
     typeof srcRecord.indexed_hue_bucket === 'number' ? srcRecord.indexed_hue_bucket : null;
