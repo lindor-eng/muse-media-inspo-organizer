@@ -49,6 +49,11 @@ export function ImageFocus() {
     }
   }, [selectedImageId, detailRefreshNonce]);
 
+  /** Always points to the latest image so the keydown listener (mounted once) reads fresh values
+      after arrow-key nav or similar-strip pick, instead of capturing the image at first mount. */
+  const imageRef = useRef<ImageRecord | null>(null);
+  useEffect(() => { imageRef.current = image; }, [image]);
+
   useEffect(() => {
     if (!similarInspectorOpen) return;
     const handleDown = (e: MouseEvent) => {
@@ -163,9 +168,11 @@ export function ImageFocus() {
       if (e.key === 'Escape') handleClose();
       if (e.key === 'ArrowLeft') { e.preventDefault(); navigateImage(-1); }
       if (e.key === 'ArrowRight') { e.preventDefault(); navigateImage(1); }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && image) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
+        const current = imageRef.current;
+        if (!current) return;
         e.preventDefault();
-        const success = await window.electronAPI.copyImageToClipboard(image.original_path);
+        const success = await window.electronAPI.copyImageToClipboard(current.original_path);
         if (success) {
           setToast(true);
           setTimeout(() => setToast(false), 2000);
@@ -174,7 +181,7 @@ export function ImageFocus() {
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleClose, image, navigateImage]);
+  }, [handleClose, navigateImage]);
 
   const handleZoomChange = (newZoom: number) => {
     const clamped = Math.max(1, Math.min(5, newZoom));
