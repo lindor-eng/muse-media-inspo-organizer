@@ -28,7 +28,6 @@ export interface VisualSimilarItem {
     title: string;
     notes: string;
     source_url: string;
-    rating: number;
     width: number | null;
     height: number | null;
     file_size: number | null;
@@ -161,7 +160,6 @@ function previewFromRecord(r: DbImageRecord | undefined): VisualSimilarItem['ima
     title: r.title,
     notes: r.notes,
     source_url: r.source_url,
-    rating: r.rating,
     width: r.width,
     height: r.height,
     file_size: r.file_size,

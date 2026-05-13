@@ -10,7 +10,6 @@ export interface ImageRecord {
   notes: string;
   alt_text: string;
   source_url: string;
-  rating: number;
   width: number | null;
   height: number | null;
   file_size: number | null;
@@ -42,7 +41,6 @@ export interface ImageRecord {
 export interface ImageFilter {
   folder_id?: string | null;
   is_trashed?: boolean;
-  rating_min?: number;
   file_type?: string;
   search?: string;
   tag_ids?: string[];
@@ -60,7 +58,7 @@ export function createImageRepo(db: Database.Database) {
   `);
 
   const updateStmt = db.prepare(`
-    UPDATE images SET title = ?, notes = ?, alt_text = ?, source_url = ?, rating = ?, folder_id = ?, updated_at = datetime('now')
+    UPDATE images SET title = ?, notes = ?, alt_text = ?, source_url = ?, folder_id = ?, updated_at = datetime('now')
     WHERE id = ?
   `);
 
@@ -101,11 +99,6 @@ export function createImageRepo(db: Database.Database) {
           conditions.push('i.folder_id = ?');
           params.push(filter.folder_id);
         }
-      }
-
-      if (filter.rating_min !== undefined) {
-        conditions.push('i.rating >= ?');
-        params.push(filter.rating_min);
       }
 
       if (filter.file_type) {
@@ -157,14 +150,13 @@ export function createImageRepo(db: Database.Database) {
       return getByIdStmt.get(id) as ImageRecord;
     },
 
-    update(id: string, data: Partial<Pick<ImageRecord, 'title' | 'notes' | 'alt_text' | 'source_url' | 'rating' | 'folder_id'>>): ImageRecord {
+    update(id: string, data: Partial<Pick<ImageRecord, 'title' | 'notes' | 'alt_text' | 'source_url' | 'folder_id'>>): ImageRecord {
       const existing = getByIdStmt.get(id) as ImageRecord;
       updateStmt.run(
         data.title ?? existing.title,
         data.notes ?? existing.notes,
         data.alt_text ?? existing.alt_text ?? '',
         data.source_url ?? existing.source_url,
-        data.rating ?? existing.rating,
         data.folder_id !== undefined ? data.folder_id : existing.folder_id,
         id
       );

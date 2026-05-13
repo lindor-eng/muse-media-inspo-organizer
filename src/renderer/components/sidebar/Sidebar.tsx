@@ -1,11 +1,63 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { Images, Tag, Trash2, FolderOpen, Plus, ChevronRight, ChevronDown, Inbox, Pencil, Trash } from 'lucide-react';
-import { useAppStore, type Folder } from '../../stores/app-store';
+import { useAppStore, type Folder, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
 export function Sidebar() {
-  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, createFolder, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder } = useAppStore();
+  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, createFolder, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder, sidebarWidth, setSidebarWidth } = useAppStore();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  // Section-level collapse for the Folders / Tags groups. Persisted so the layout sticks across launches.
+  const [foldersCollapsed, setFoldersCollapsed] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('muse:foldersCollapsed') === '1'; } catch { return false; }
+  });
+  const [tagsCollapsed, setTagsCollapsed] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('muse:tagsCollapsed') === '1'; } catch { return false; }
+  });
+  const persistCollapsed = (key: 'muse:foldersCollapsed' | 'muse:tagsCollapsed', v: boolean) => {
+    try { window.localStorage.setItem(key, v ? '1' : '0'); } catch { /* ignore storage errors */ }
+  };
+
+  // FLIP animation: capture each folder row's bounding box before the render that changes order,
+  // then on layout effect compute deltas and animate from old position → new position. Runs every
+  // render so it stays in sync with previewOrder updates during a drag.
+  useLayoutEffect(() => {
+    const next = new Map<string, DOMRect>();
+    rowRefs.current.forEach((el, id) => {
+      next.set(id, el.getBoundingClientRect());
+    });
+
+    // Only animate while a folder drag is actively shifting the preview order. Other re-renders
+    // (folder selection, count updates, etc.) just refresh the cached rects so the next real
+    // reorder has accurate "previous" positions to FLIP from.
+    if (!draggingFolderId) {
+      prevRectsRef.current = next;
+      return;
+    }
+
+    const prev = prevRectsRef.current;
+    let animatedAny = false;
+    rowRefs.current.forEach((el, id) => {
+      const oldRect = prev.get(id);
+      const newRect = next.get(id);
+      if (!oldRect || !newRect) return;
+      const dy = oldRect.top - newRect.top;
+      if (Math.abs(dy) < 0.5) return;
+      // Skip animating the row currently being dragged — the browser owns its visual position.
+      if (id === draggingFolderId) return;
+      el.style.transition = 'none';
+      el.style.transform = `translateY(${dy}px)`;
+      // Force reflow so the next frame's transition kicks in.
+      void el.offsetHeight;
+      el.style.transition = 'transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1)';
+      el.style.transform = '';
+      animatedAny = true;
+    });
+    if (animatedAny) {
+      isAnimatingRef.current = true;
+      window.setTimeout(() => { isAnimatingRef.current = false; }, 200);
+    }
+    prevRectsRef.current = next;
+  });
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -13,8 +65,51 @@ export function Sidebar() {
   const [trashContextMenu, setTrashContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  /** Active folder reorder drag — id of the folder being dragged. */
+  const [draggingFolderId, setDraggingFolderId] = useState<string | null>(null);
+  /** Live preview ordering during a drag: maps parent_id → ordered child ids.
+      Null when no drag is active; rendering falls back to folders[].sort_order. */
+  const [previewOrder, setPreviewOrder] = useState<Map<string | null, string[]> | null>(null);
+  /** Refs to each folder row for FLIP animation (record positions before reorder, then animate). */
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const prevRectsRef = useRef<Map<string, DOMRect>>(new Map());
+  /** Tracks whether a FLIP animation is in progress so we can skip new preview updates until it
+      finishes. Without this, fast cursor moves trigger overlapping animations that visually clash. */
+  const isAnimatingRef = useRef(false);
+  /** Last (target id, edge) committed to preview — used to dedupe redundant dragover events. */
+  const lastPreviewKeyRef = useRef<string | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const trashContextMenuRef = useRef<HTMLDivElement>(null);
+  const isResizingRef = useRef(false);
+
+  // Drag-to-resize: while the user holds the right edge handle, mousemove updates width and
+  // the body cursor stays as col-resize even if the pointer briefly leaves the handle.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const next = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, e.clientX));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      if (!isResizingRef.current) return;
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [setSidebarWidth]);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   useEffect(() => {
     if (!contextMenu && !trashContextMenu) return;
@@ -39,7 +134,16 @@ export function Sidebar() {
     setRenameValue('');
   };
 
-  const rootFolders = folders.filter((f) => f.parent_id === null);
+  /** Apply previewOrder if active, otherwise fall back to the canonical sort_order. */
+  const orderedSiblings = (parentId: string | null): Folder[] => {
+    const all = folders.filter((f) => f.parent_id === parentId);
+    const overridden = previewOrder?.get(parentId);
+    if (!overridden) return all.sort((a, b) => a.sort_order - b.sort_order);
+    const byId = new Map(all.map((f) => [f.id, f] as const));
+    return overridden.map((id) => byId.get(id)).filter((f): f is Folder => Boolean(f));
+  };
+
+  const rootFolders = orderedSiblings(null);
 
   const toggleExpand = (id: string) => {
     setExpandedFolders((prev) => {
@@ -58,8 +162,7 @@ export function Sidebar() {
     }
   };
 
-  const getChildren = (parentId: string): Folder[] =>
-    folders.filter((f) => f.parent_id === parentId);
+  const getChildren = (parentId: string): Folder[] => orderedSiblings(parentId);
 
   const handleFolderDrop = async (e: React.DragEvent, folderId: string) => {
     e.preventDefault();
@@ -88,6 +191,55 @@ export function Sidebar() {
     setDropTargetId(null);
   };
 
+  /** Live-update the preview order so siblings shift around the dragged row as the cursor moves.
+      Throttled by an "is animating" flag and a dedupe key so fast drags don't queue overlapping
+      reorders mid-animation. */
+  const previewReorder = (draggedId: string, targetId: string, edge: 'before' | 'after') => {
+    if (draggedId === targetId) return;
+    if (isAnimatingRef.current) return;
+    const key = `${targetId}:${edge}`;
+    if (lastPreviewKeyRef.current === key) return;
+
+    const dragged = folders.find((f) => f.id === draggedId);
+    const target = folders.find((f) => f.id === targetId);
+    if (!dragged || !target) return;
+    if (dragged.parent_id !== target.parent_id) return;
+
+    const parentId = dragged.parent_id;
+    const current = orderedSiblings(parentId).map((f) => f.id);
+    const without = current.filter((id) => id !== draggedId);
+    const targetIdx = without.indexOf(targetId);
+    if (targetIdx === -1) return;
+    const insertAt = edge === 'before' ? targetIdx : targetIdx + 1;
+    const next = [...without.slice(0, insertAt), draggedId, ...without.slice(insertAt)];
+
+    setPreviewOrder((prev) => {
+      const map = new Map(prev ?? []);
+      const existing = map.get(parentId);
+      if (existing && existing.length === next.length && existing.every((id, i) => id === next[i])) return prev;
+      map.set(parentId, next);
+      return map;
+    });
+    lastPreviewKeyRef.current = key;
+  };
+
+  /** Persist the preview order on drop. Writes only the rows whose index changed. */
+  const commitFolderReorder = async () => {
+    const order = previewOrder;
+    setPreviewOrder(null);
+    if (!order) return;
+    await Promise.all(
+      Array.from(order.entries()).flatMap(([, ids]) =>
+        ids.map((id, i) => {
+          const f = folders.find((x) => x.id === id);
+          if (!f || f.sort_order === i) return Promise.resolve();
+          return api.updateFolder(id, { sort_order: i });
+        }),
+      ),
+    );
+    await refreshAll();
+  };
+
   const renderFolder = (folder: Folder, depth = 0) => {
     const children = getChildren(folder.id);
     const hasChildren = children.length > 0;
@@ -99,13 +251,56 @@ export function Sidebar() {
     return (
       <div
         key={folder.id}
-        onDrop={(e) => handleFolderDrop(e, folder.id)}
-        onDragOver={(e) => handleFolderDragOver(e, folder.id)}
-        onDragLeave={handleFolderDragLeave}
+        ref={(el) => {
+          if (el) rowRefs.current.set(folder.id, el);
+          else rowRefs.current.delete(folder.id);
+        }}
+        className="relative"
+        draggable={!isRenaming}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('application/x-muse-folder', folder.id);
+          e.dataTransfer.effectAllowed = 'move';
+          setDraggingFolderId(folder.id);
+          lastPreviewKeyRef.current = null;
+          isAnimatingRef.current = false;
+          setPreviewOrder(new Map([[folder.parent_id, orderedSiblings(folder.parent_id).map((f) => f.id)]]));
+        }}
+        onDragEnd={() => {
+          setDraggingFolderId(null);
+          lastPreviewKeyRef.current = null;
+          isAnimatingRef.current = false;
+          void commitFolderReorder();
+        }}
+        onDragOver={(e) => {
+          const types = e.dataTransfer.types;
+          const isFolderDrag = types.includes('application/x-muse-folder');
+          if (isFolderDrag && draggingFolderId) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const rect = e.currentTarget.getBoundingClientRect();
+            const edge: 'before' | 'after' = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+            previewReorder(draggingFolderId, folder.id, edge);
+            setDropTargetId(null);
+          } else {
+            handleFolderDragOver(e, folder.id);
+          }
+        }}
+        onDragLeave={() => handleFolderDragLeave()}
+        onDrop={(e) => {
+          const folderDragId = e.dataTransfer.getData('application/x-muse-folder');
+          if (folderDragId) {
+            e.preventDefault();
+            e.stopPropagation();
+            // commitFolderReorder runs from onDragEnd; nothing extra needed here.
+          } else {
+            handleFolderDrop(e, folder.id);
+          }
+        }}
       >
         <button
           className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors
-            ${isDropTarget ? 'bg-blue-600/30 text-blue-300 ring-1 ring-blue-500' : isSelected ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-white/5'}`}
+            ${isDropTarget ? 'bg-blue-600/30 text-blue-300 ring-1 ring-blue-500' : isSelected ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-white/5'}
+            ${draggingFolderId === folder.id ? 'opacity-50' : ''}`}
           style={{ paddingLeft: `${12 + depth * 16}px` }}
           onClick={() => setViewMode('folder', folder.id)}
           onContextMenu={(e) => {
@@ -113,16 +308,6 @@ export function Sidebar() {
             setContextMenu({ folderId: folder.id, x: e.clientX, y: e.clientY });
           }}
         >
-          {hasChildren ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); toggleExpand(folder.id); }}
-              className="p-0.5 hover:bg-white/10 rounded"
-            >
-              {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            </button>
-          ) : (
-            <span className="w-4" />
-          )}
           <FolderOpen size={14} className="shrink-0 text-yellow-500" />
           {isRenaming ? (
             <input
@@ -142,6 +327,15 @@ export function Sidebar() {
             <span className="truncate flex-1 text-left">{folder.name}</span>
           )}
           {!isRenaming && <span className="text-xs text-gray-500">{folder.image_count ?? 0}</span>}
+          {hasChildren && !isRenaming && (
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleExpand(folder.id); }}
+              className="p-0.5 -mr-0.5 hover:bg-white/10 rounded shrink-0 text-gray-500"
+              aria-label={isExpanded ? 'Collapse' : 'Expand'}
+            >
+              {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          )}
         </button>
         {isExpanded && children.map((child) => renderFolder(child, depth + 1))}
       </div>
@@ -149,7 +343,10 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col h-full overflow-hidden">
+    <aside
+      className="shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col h-full overflow-hidden relative"
+      style={{ width: sidebarWidth }}
+    >
       <div className="px-3 py-2">
         <h1 className="text-sm font-semibold text-gray-200 px-2">Muse</h1>
       </div>
@@ -203,7 +400,21 @@ export function Sidebar() {
         {/* Folders */}
         <div className="pt-4">
           <div className="flex items-center justify-between px-3 pb-1">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Folders</span>
+            <button
+              onClick={() => {
+                const next = !foldersCollapsed;
+                setFoldersCollapsed(next);
+                persistCollapsed('muse:foldersCollapsed', next);
+              }}
+              className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-300"
+            >
+              Folders
+              <ChevronDown
+                size={12}
+                className="transition-transform duration-200 ease-out"
+                style={{ transform: foldersCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+              />
+            </button>
             <button
               onClick={() => setIsCreatingFolder(true)}
               className="p-0.5 -mr-1.5 text-gray-500 hover:text-gray-300 rounded"
@@ -212,33 +423,51 @@ export function Sidebar() {
             </button>
           </div>
 
-          {isCreatingFolder && (
-            <div className="px-3 py-1">
-              <input
-                type="text"
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreateFolder();
-                  if (e.key === 'Escape') setIsCreatingFolder(false);
-                }}
-                onBlur={handleCreateFolder}
-                autoFocus
-                placeholder="Folder name..."
-                className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-              />
-            </div>
-          )}
+          {!foldersCollapsed && (
+            <>
+              {isCreatingFolder && (
+                <div className="px-3 py-1">
+                  <input
+                    type="text"
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleCreateFolder();
+                      if (e.key === 'Escape') setIsCreatingFolder(false);
+                    }}
+                    onBlur={handleCreateFolder}
+                    autoFocus
+                    placeholder="Folder name..."
+                    className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
 
-          {rootFolders.map((folder) => renderFolder(folder))}
+              {rootFolders.map((folder) => renderFolder(folder))}
+            </>
+          )}
         </div>
 
         {/* Tags */}
         <div className="pt-4">
           <div className="px-3 pb-1">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Tags</span>
+            <button
+              onClick={() => {
+                const next = !tagsCollapsed;
+                setTagsCollapsed(next);
+                persistCollapsed('muse:tagsCollapsed', next);
+              }}
+              className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-300"
+            >
+              Tags
+              <ChevronDown
+                size={12}
+                className="transition-transform duration-200 ease-out"
+                style={{ transform: tagsCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+              />
+            </button>
           </div>
-          {tags.map((tag) => (
+          {!tagsCollapsed && tags.map((tag) => (
             <button
               key={tag.id}
               className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors
@@ -316,6 +545,15 @@ export function Sidebar() {
           </button>
         </div>
       )}
+      {/* Resize handle: 4px-wide invisible strip on the right edge that becomes a 1px hairline
+          highlight on hover. Captures mousedown to start drag-to-resize. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onMouseDown={startResize}
+        className="absolute top-0 right-0 h-full w-1 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500/60 z-10"
+      />
     </aside>
   );
 }

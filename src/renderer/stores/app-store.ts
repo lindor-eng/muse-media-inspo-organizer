@@ -38,6 +38,25 @@ function loadInitialGridThumb(): number {
   }
 }
 
+/** Bounds and storage key for the user-resizable sidebar width (px). */
+export const SIDEBAR_WIDTH_MIN = 180;
+export const SIDEBAR_WIDTH_MAX = 480;
+export const SIDEBAR_WIDTH_DEFAULT = 240;
+const SIDEBAR_WIDTH_STORAGE_KEY = 'muse:sidebarWidth';
+
+function loadInitialSidebarWidth(): number {
+  if (typeof window === 'undefined') return SIDEBAR_WIDTH_DEFAULT;
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    if (!raw) return SIDEBAR_WIDTH_DEFAULT;
+    const n = Math.round(Number(raw));
+    if (!Number.isFinite(n)) return SIDEBAR_WIDTH_DEFAULT;
+    return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, n));
+  } catch {
+    return SIDEBAR_WIDTH_DEFAULT;
+  }
+}
+
 /** Dedupe parallel initial loads (StrictMode double-mount). */
 let similarityPrefsHydrateBusy = false;
 /** Incremented on each prefs save so in-flight hydrate reads cannot clobber newer UI state (async race vs IPC). */
@@ -93,7 +112,6 @@ export interface ImageRecord {
   notes: string;
   alt_text: string;
   source_url: string;
-  rating: number;
   width: number | null;
   height: number | null;
   file_size: number | null;
@@ -171,6 +189,8 @@ interface AppState {
   isCmdHeld: boolean;
   /** Grid thumbnail height in px (user-controlled via slider). */
   gridThumbHeight: number;
+  /** Left sidebar width in px (user-resizable via right-edge drag handle). */
+  sidebarWidth: number;
   /** Bumped to force DetailPanel/ImageFocus to re-fetch image metadata after a backend mutation that bypassed local state (e.g. AI re-analysis). */
   detailRefreshNonce: number;
   draggingImageId: string | null;
@@ -202,6 +222,7 @@ interface AppState {
   executeSearch: (query: string) => Promise<void>;
   setTheme: (theme: 'light' | 'dark') => void;
   setGridThumbHeight: (px: number) => void;
+  setSidebarWidth: (px: number) => void;
   setDraggingImage: (id: string | null) => void;
 
   loadFolders: () => Promise<void>;
@@ -247,6 +268,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isSearching: false,
   isCmdHeld: false,
   gridThumbHeight: loadInitialGridThumb(),
+  sidebarWidth: loadInitialSidebarWidth(),
   draggingImageId: null,
   focusOriginRect: null,
   isClosingFocus: false,
@@ -368,6 +390,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ gridThumbHeight: clamped });
     try {
       window.localStorage.setItem(GRID_THUMB_STORAGE_KEY, String(clamped));
+    } catch {
+      // Storage not available — accept session-only value.
+    }
+  },
+  setSidebarWidth: (px) => {
+    const clamped = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(px)));
+    set({ sidebarWidth: clamped });
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped));
     } catch {
       // Storage not available — accept session-only value.
     }

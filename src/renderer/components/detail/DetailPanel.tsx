@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { X, Star, Trash2, RotateCcw, Plus, Pencil } from 'lucide-react';
+import { X, Trash2, RotateCcw, Plus, Pencil } from 'lucide-react';
 import { useAppStore, type ImageRecord, type ImageColor } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
@@ -94,15 +94,6 @@ export function DetailPanel() {
       lastImageRef.current = updated;
     }
     setEditingAlt(false);
-  };
-
-  const handleRating = (rating: number) => {
-    if (!displayImage) return;
-    const newRating = rating === displayImage.rating ? 0 : rating;
-    updateImage(displayImage.id, { rating: newRating } as Partial<ImageRecord>);
-    const updated = { ...displayImage, rating: newRating };
-    setImage(updated);
-    lastImageRef.current = updated;
   };
 
   const formatFileSize = (bytes: number | null): string => {
@@ -289,20 +280,6 @@ export function DetailPanel() {
               )}
             </div>
           )}
-        </div>
-
-        <div className="px-4 pb-3">
-          <p className="text-xs text-gray-500 mb-1.5">Rating</p>
-          <div className="flex gap-0.5">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} onClick={() => handleRating(n)} className="p-0.5">
-                <Star
-                  size={16}
-                  className={n <= displayImage.rating ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'}
-                />
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="px-4 pb-3">
