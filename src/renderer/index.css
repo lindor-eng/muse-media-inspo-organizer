@@ -61,6 +61,17 @@ body {
   animation: fade-in-y 200ms ease-out forwards;
 }
 
+/* Cascading enter for sidebar sections. Each row sets --row-index inline; the parent sets
+   --total-rows and --cascade-stagger. Collapse is instant — no exit animation. */
+@keyframes cascade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cascade-in > .cascade-row {
+  animation: cascade-in 160ms ease-out backwards;
+  animation-delay: calc(var(--row-index, 0) * var(--cascade-stagger, 22ms));
+}
+
 /* Subtle scale pulse on the toast card when a new image joins the queue. */
 @keyframes toast-pulse {
   0%   { transform: scale(1); }

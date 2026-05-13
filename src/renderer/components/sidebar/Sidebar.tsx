@@ -17,6 +17,41 @@ export function Sidebar() {
     try { window.localStorage.setItem(key, v ? '1' : '0'); } catch { /* ignore storage errors */ }
   };
 
+  /** Count of folders currently rendered in the tree (top-level + expanded descendants).
+      Drives the cascade-out timeout so the collapse waits long enough for every row to fade. */
+  const visibleFolderCount = (): number => {
+    const walk = (parentId: string | null): number => {
+      const siblings = folders.filter((f) => f.parent_id === parentId);
+      let count = siblings.length;
+      for (const s of siblings) if (expandedFolders.has(s.id)) count += walk(s.id);
+      return count;
+    };
+    return walk(null);
+  };
+
+  /** Per-row animation duration baked into the CSS keyframes. Keep in sync with `index.css`. */
+  const CASCADE_ROW_DURATION = 160;
+  /** Target total duration so short and long sections feel similar. */
+  const CASCADE_TARGET_TOTAL = 360;
+  const cascadeStagger = (rowCount: number): number => {
+    if (rowCount <= 1) return 0;
+    const ideal = (CASCADE_TARGET_TOTAL - CASCADE_ROW_DURATION) / (rowCount - 1);
+    return Math.max(4, Math.min(28, ideal));
+  };
+
+  // Expand cascades top-down via cascade-in; collapse is instant (no exit animation).
+  const toggleFolders = () => {
+    const next = !foldersCollapsed;
+    setFoldersCollapsed(next);
+    persistCollapsed('muse:foldersCollapsed', next);
+  };
+
+  const toggleTags = () => {
+    const next = !tagsCollapsed;
+    setTagsCollapsed(next);
+    persistCollapsed('muse:tagsCollapsed', next);
+  };
+
   // FLIP animation: capture each folder row's bounding box before the render that changes order,
   // then on layout effect compute deltas and animate from old position → new position. Runs every
   // render so it stays in sync with previewOrder updates during a drag.
@@ -240,9 +275,8 @@ export function Sidebar() {
     await refreshAll();
   };
 
-  const renderFolder = (folder: Folder, depth = 0) => {
-    const children = getChildren(folder.id);
-    const hasChildren = children.length > 0;
+  const renderFolder = (folder: Folder, depth = 0, rowIndex?: number) => {
+    const hasChildren = orderedSiblings(folder.id).length > 0;
     const isExpanded = expandedFolders.has(folder.id);
     const isSelected = viewMode === 'folder' && selectedFolderId === folder.id;
     const isDropTarget = dropTargetId === folder.id;
@@ -255,7 +289,8 @@ export function Sidebar() {
           if (el) rowRefs.current.set(folder.id, el);
           else rowRefs.current.delete(folder.id);
         }}
-        className="relative"
+        className="relative cascade-row"
+        style={rowIndex !== undefined ? { ['--row-index' as string]: rowIndex } : undefined}
         draggable={!isRenaming}
         onDragStart={(e) => {
           e.dataTransfer.setData('application/x-muse-folder', folder.id);
@@ -337,7 +372,6 @@ export function Sidebar() {
             </button>
           )}
         </button>
-        {isExpanded && children.map((child) => renderFolder(child, depth + 1))}
       </div>
     );
   };
@@ -401,11 +435,7 @@ export function Sidebar() {
         <div className="pt-4">
           <div className="flex items-center justify-between px-3 pb-1">
             <button
-              onClick={() => {
-                const next = !foldersCollapsed;
-                setFoldersCollapsed(next);
-                persistCollapsed('muse:foldersCollapsed', next);
-              }}
+              onClick={toggleFolders}
               className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-300"
             >
               Folders
@@ -424,7 +454,13 @@ export function Sidebar() {
           </div>
 
           {!foldersCollapsed && (
-            <>
+            <div
+              className="cascade-in"
+              style={{
+                ['--total-rows' as string]: visibleFolderCount(),
+                ['--cascade-stagger' as string]: `${cascadeStagger(visibleFolderCount())}ms`,
+              }}
+            >
               {isCreatingFolder && (
                 <div className="px-3 py-1">
                   <input
@@ -443,8 +479,20 @@ export function Sidebar() {
                 </div>
               )}
 
-              {rootFolders.map((folder) => renderFolder(folder))}
-            </>
+              {(() => {
+                // Flatten the folder tree to a render list with stable cascade indices so nested
+                // expanded children stagger after their parents.
+                const flat: Array<{ folder: Folder; depth: number }> = [];
+                const walk = (parentId: string | null, depth: number) => {
+                  for (const f of orderedSiblings(parentId)) {
+                    flat.push({ folder: f, depth });
+                    if (expandedFolders.has(f.id)) walk(f.id, depth + 1);
+                  }
+                };
+                walk(null, 0);
+                return flat.map(({ folder, depth }, i) => renderFolder(folder, depth, i));
+              })()}
+            </div>
           )}
         </div>
 
@@ -452,11 +500,7 @@ export function Sidebar() {
         <div className="pt-4">
           <div className="px-3 pb-1">
             <button
-              onClick={() => {
-                const next = !tagsCollapsed;
-                setTagsCollapsed(next);
-                persistCollapsed('muse:tagsCollapsed', next);
-              }}
+              onClick={toggleTags}
               className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-300"
             >
               Tags
@@ -467,21 +511,33 @@ export function Sidebar() {
               />
             </button>
           </div>
-          {!tagsCollapsed && tags.map((tag) => (
-            <button
-              key={tag.id}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors
-                ${viewMode === 'tag' && selectedTagId === tag.id ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-white/5'}`}
-              onClick={() => setViewMode('tag', tag.id)}
+          {!tagsCollapsed && (
+            <div
+              className="cascade-in"
+              style={{
+                ['--total-rows' as string]: tags.length,
+                // Match the folders section's per-row stagger so the two sections feel identical.
+                ['--cascade-stagger' as string]: `${cascadeStagger(visibleFolderCount())}ms`,
+              }}
             >
-              <span
-                className="w-2.5 h-2.5 rounded-full shrink-0"
-                style={{ backgroundColor: tag.color ?? '#6b7280' }}
-              />
-              <span className="truncate flex-1 text-left">{tag.name}</span>
-              <span className="text-xs text-gray-500">{tag.image_count ?? 0}</span>
-            </button>
-          ))}
+              {tags.map((tag, i) => (
+                <button
+                  key={tag.id}
+                  className={`cascade-row w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors
+                    ${viewMode === 'tag' && selectedTagId === tag.id ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-white/5'}`}
+                  style={{ ['--row-index' as string]: i }}
+                  onClick={() => setViewMode('tag', tag.id)}
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: tag.color ?? '#6b7280' }}
+                  />
+                  <span className="truncate flex-1 text-left">{tag.name}</span>
+                  <span className="text-xs text-gray-500">{tag.image_count ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </nav>
 
