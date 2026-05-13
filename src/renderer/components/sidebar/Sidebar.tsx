@@ -206,7 +206,7 @@ export function Sidebar() {
             <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Folders</span>
             <button
               onClick={() => setIsCreatingFolder(true)}
-              className="p-0.5 text-gray-500 hover:text-gray-300 rounded"
+              className="p-0.5 -mr-1.5 text-gray-500 hover:text-gray-300 rounded"
             >
               <Plus size={14} />
             </button>
