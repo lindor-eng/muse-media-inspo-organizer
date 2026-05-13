@@ -11,8 +11,6 @@ export function AppShell() {
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
-    let dragCounter = 0;
-
     const isExternalDrag = (e: DragEvent) => {
       const types = e.dataTransfer?.types;
       if (!types) return false;
@@ -26,32 +24,53 @@ export function AppShell() {
       );
     };
 
+    // Use a timeout watchdog instead of an enter/leave counter. dragover fires continuously while
+    // a drag hovers anywhere over the window; if it stops firing for >180ms we know the drag has
+    // ended (released outside the window, switched apps, etc.) and we can safely hide the overlay.
+    // The counter approach got stuck whenever a dragleave was dropped — common when releasing over
+    // window chrome or other apps.
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        setIsDragging(false);
+        watchdog = null;
+      }, 180);
+    };
+    const clearOverlay = () => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+      setIsDragging(false);
+    };
+
     const handleDragEnter = (e: DragEvent) => {
       e.preventDefault();
       if (!isExternalDrag(e)) return;
-      dragCounter++;
       setIsDragging(true);
-    };
-
-    const handleDragLeave = (e: DragEvent) => {
-      e.preventDefault();
-      if (!isDragging) return;
-      dragCounter--;
-      if (dragCounter <= 0) {
-        dragCounter = 0;
-        setIsDragging(false);
-      }
+      armWatchdog();
     };
 
     const handleDragOver = (e: DragEvent) => {
       e.preventDefault();
+      if (!isExternalDrag(e)) return;
+      setIsDragging(true);
+      armWatchdog();
+    };
+
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      // Only treat dragleave as a real exit when it happens at the window's edge — child-to-child
+      // transitions inside the document also fire dragleave but the watchdog will keep the overlay up.
+      if (e.relatedTarget === null) clearOverlay();
     };
 
     const handleDrop = (e: DragEvent) => {
       e.preventDefault();
-      dragCounter = 0;
-      setIsDragging(false);
+      clearOverlay();
     };
+
+    // Belt-and-suspenders: window-level cleanup for cases where dragend bubbles up.
+    const handleWindowDragEnd = () => clearOverlay();
+    const handleWindowBlur = () => clearOverlay();
 
     const isEditableTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -91,11 +110,19 @@ export function AppShell() {
       }
     };
 
+    // Manual escape hatch — pressing Escape always clears the overlay even if the watchdog missed it.
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearOverlay();
+    };
+
     document.addEventListener('dragenter', handleDragEnter);
     document.addEventListener('dragleave', handleDragLeave);
     document.addEventListener('dragover', handleDragOver);
     document.addEventListener('drop', handleDrop);
     document.addEventListener('paste', handlePaste);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('dragend', handleWindowDragEnd);
+    window.addEventListener('blur', handleWindowBlur);
 
     const cleanup = api.onFilesImported(() => {
       refreshAll();
@@ -107,6 +134,10 @@ export function AppShell() {
       document.removeEventListener('dragover', handleDragOver);
       document.removeEventListener('drop', handleDrop);
       document.removeEventListener('paste', handlePaste);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('dragend', handleWindowDragEnd);
+      window.removeEventListener('blur', handleWindowBlur);
+      if (watchdog) clearTimeout(watchdog);
       cleanup();
     };
   }, [refreshAll]);
