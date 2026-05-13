@@ -50,7 +50,7 @@ export function ModelSetup() {
     const unsub = api.onPullProgress((data: PullProgress) => {
       setProgress(data);
     });
-    return unsub;
+    return () => { unsub(); };
   }, [state]);
 
   const handleDownload = async () => {

@@ -520,29 +520,6 @@ export async function findSimilarImagesWithPreviews(
   return { matches: out, meta: metaPayload };
 }
 
-export function warmImageEmbedding(db: Database.Database, imageId: string): void {
-  setImmediate(() => {
-    ensureImageEmbedding(db, imageId).catch(() => undefined);
-  });
-}
-
-export async function findSimilarImages(db: Database.Database, imageId: string, limit = 20): Promise<SimilarResult[]> {
-  const row = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?').get(imageId) as
-    | { embedding: Buffer }
-    | undefined;
-  if (!row) return [];
-  const floats = blobToFloat32Vector(Buffer.from(row.embedding));
-  try {
-    return db
-      .prepare(
-        `SELECT image_id, distance FROM image_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?`,
-      )
-      .all(JSON.stringify(Array.from(floats)), limit) as SimilarResult[];
-  } catch {
-    return [];
-  }
-}
-
 /** Generate and store the caption embedding + pHash for an image. Used during import and re-analysis. */
 export async function generateAndStoreEmbedding(
   db: Database.Database,
@@ -565,7 +542,3 @@ export async function generateAndStoreEmbedding(
   return embedAndStoreForImage(db, imageId);
 }
 
-export function getEmbeddingCount(db: Database.Database): number {
-  const row = db.prepare('SELECT count(*) as cnt FROM image_embeddings').get() as { cnt: number };
-  return row.cnt;
-}

@@ -296,45 +296,7 @@ export async function extractAndStoreColors(db: Database.Database, imageId: stri
   }
 }
 
-/** Retrofit chromatic + dominant-hue fields from thumbnails. */
-export async function reindexAllThumbColorIndex(
-  db: Database.Database,
-): Promise<{ scanned: number; chromaticWritten: number }> {
-  const rows = db
-    .prepare(
-      `
-    SELECT id, thumbnail_path FROM images
-    WHERE is_trashed = 0 AND thumbnail_path IS NOT NULL AND length(trim(thumbnail_path)) > 0
-    `,
-    )
-    .all() as Array<{ id: string; thumbnail_path: string }>;
 
-  const upd = db.prepare(upsertThumbColorIndexSql);
-  let chromaticWritten = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const ix = await computeThumbColorIndex(rows[i].thumbnail_path);
-    if (ix && (ix.chromatic === 0 || ix.chromatic === 1)) {
-      upd.run(
-        ix.chromatic,
-        ix.hueBucket,
-        ix.hueStrength,
-        ix.hueDegrees,
-        ix.hueBucketSecondary,
-        ix.hueStrengthSecondary,
-        rows[i].id,
-      );
-      chromaticWritten++;
-    }
-    if (i % 48 === 47) await new Promise<void>((r) => setImmediate(r));
-  }
-  return { scanned: rows.length, chromaticWritten };
-}
-
-/** @deprecated use reindexAllThumbColorIndex */
-export async function reindexAllIndexedChromatic(db: Database.Database) {
-  const r = await reindexAllThumbColorIndex(db);
-  return { scanned: r.scanned, updated: r.chromaticWritten };
-}
 
 /**
  * Silently extract palettes for any image that is missing rows in image_colors.

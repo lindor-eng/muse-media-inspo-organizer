@@ -381,8 +381,10 @@ export function Sidebar() {
       className="shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col h-full overflow-hidden relative"
       style={{ width: sidebarWidth }}
     >
-      <div className="px-3 py-2">
-        <h1 className="text-sm font-semibold text-gray-200 px-2">Muse</h1>
+      <div className="h-12 shrink-0 flex items-center px-3 border-b border-gray-800">
+        <h1 className="text-sm font-semibold text-gray-200 px-2 truncate">
+          {window.electronAPI.getLocalUsername() || 'Muse'}
+        </h1>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">

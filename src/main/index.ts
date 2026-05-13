@@ -3,7 +3,7 @@ import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { initDatabase } from './database/connection';
 import { registerIpcHandlers } from './ipc-handlers';
-import { startOllamaServer, stopOllamaServer, isModelAvailable, pullModel, type PullProgress } from './ai/ollama-server';
+import { startOllamaServer, stopOllamaServer } from './ai/ollama-server';
 import { backfillMissingPalettes } from './color-extractor';
 
 if (started) app.quit();

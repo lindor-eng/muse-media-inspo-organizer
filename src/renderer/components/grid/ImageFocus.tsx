@@ -353,7 +353,7 @@ export function ImageFocus() {
 
       <footer
         ref={stripAnchorRef}
-        className={`shrink-0 h-[130px] border-t border-gray-800 px-4 py-2 bg-gray-950 overflow-hidden transition-all ${phase === 'animating' || phase === 'done' ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'}`}
+        className={`shrink-0 h-[138px] border-t border-gray-800 px-4 py-2 bg-gray-950 overflow-hidden transition-all ${phase === 'animating' || phase === 'done' ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'}`}
         style={{ transitionTimingFunction: 'cubic-bezier(0.2, 0.9, 0.3, 1)', transitionDuration: '350ms' }}
       >
         {(phase === 'done' || phase === 'animating') && (

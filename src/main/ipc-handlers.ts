@@ -5,10 +5,9 @@ import { createFolderRepo } from './database/repositories/folders';
 import { createImageRepo, type ImageFilter } from './database/repositories/images';
 import { createTagRepo } from './database/repositories/tags';
 import { importFiles, importFromUrl, importFromBuffer, type ImportResult } from './importer';
-import { extractAndStoreColors, reindexAllThumbColorIndex } from './color-extractor';
-import { isOllamaRunning } from './ai/ollama-client';
+import { extractAndStoreColors } from './color-extractor';
 import { autoTagImage } from './ai/auto-tagger';
-import { searchByText, findSimilarImagesWithPreviews, generateAndStoreEmbedding, getEmbeddingCount } from './ai/natural-search';
+import { searchByText, findSimilarImagesWithPreviews, generateAndStoreEmbedding } from './ai/natural-search';
 import { parseSimilarRefineModes } from '../shared/similar-refine';
 import {
   loadSimilarityPrefs,
@@ -71,10 +70,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   // Colors
   ipcMain.handle('colors:getForImage', (_, imageId: string) => {
     return db.prepare('SELECT * FROM image_colors WHERE image_id = ? ORDER BY sort_order').all(imageId);
-  });
-  ipcMain.handle('colors:reindexChromaticFlags', async () => {
-    const r = await reindexAllThumbColorIndex(db);
-    return { scanned: r.scanned, updated: r.chromaticWritten };
   });
 
   // Import
@@ -189,14 +184,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   );
 
   // AI
-  ipcMain.handle('ai:status', async () => ({
-    ollama: await isOllamaRunning(),
-  }));
-
-  ipcMain.handle('ai:autoTag', async (_, imageId: string) => {
-    return autoTagImage(db, imageId);
-  });
-
   ipcMain.handle('ai:reanalyzeImages', async (_, imageIds: string[]) => {
     if (imageIds.length === 0) return { processed: 0, total: 0 };
 
@@ -233,21 +220,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         : [],
     );
     return findSimilarImagesWithPreviews(db, imageId, { refineModes });
-  });
-
-  ipcMain.handle('ai:embeddingCount', () => getEmbeddingCount(db));
-
-  ipcMain.handle('ai:generateMissingEmbeddings', async () => {
-    const allImages = db.prepare(
-      'SELECT id, original_path FROM images WHERE is_trashed = 0 AND id NOT IN (SELECT image_id FROM image_embeddings)'
-    ).all() as { id: string; original_path: string }[];
-
-    let generated = 0;
-    for (const img of allImages) {
-      const ok = await generateAndStoreEmbedding(db, img.id, img.original_path);
-      if (ok) generated++;
-    }
-    return { generated, total: allImages.length };
   });
 
   ipcMain.handle('embeddings:hasForImage', (_, imageId: string) => {

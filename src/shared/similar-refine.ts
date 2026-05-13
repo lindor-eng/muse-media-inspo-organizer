@@ -10,10 +10,6 @@ export const REFINE_MODE_HELP: Record<SimilarRefineMode, string> = {
     'Similar colors: Re-ranks by extracted palette overlap and dominant-hue agreement. Useful when you want to find images that share the same chromatic mood, even if their subjects differ.',
 };
 
-export function combinedRefinementHelp(): string {
-  return SIMILAR_REFINE_MODES.map((m) => REFINE_MODE_HELP[m]).join('\n\n');
-}
-
 /** At most one mode — similar-strip radio (first recognized entry wins if callers send extras). */
 export function parseSimilarRefineModes(raw: unknown): SimilarRefineMode[] {
   if (!Array.isArray(raw)) return [];

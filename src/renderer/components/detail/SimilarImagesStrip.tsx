@@ -319,7 +319,7 @@ export function SimilarImagesStrip({
               <div className="w-px self-stretch min-h-[3.5rem] bg-gray-800 shrink-0" aria-hidden />
             </>
           ) : null}
-          <div className="flex gap-2 overflow-x-auto flex-1 min-w-0">
+          <div className="flex gap-2 overflow-x-auto overflow-y-hidden flex-1 min-w-0 no-scrollbar">
             {loading && shown.length === 0 ? (
               Array.from({ length: skeletonCount }).map((_, i) => (
                 <div

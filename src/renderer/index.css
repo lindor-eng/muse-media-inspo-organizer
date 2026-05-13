@@ -33,6 +33,15 @@ body {
   background: #4b5563;
 }
 
+/* Hides scrollbars on overflow containers while still allowing wheel/trackpad scroll. */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE / legacy Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Drag region for window title bar */
 .drag-region {
   -webkit-app-region: drag;

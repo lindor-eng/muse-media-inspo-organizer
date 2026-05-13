@@ -119,14 +119,6 @@ export interface ImageRecord {
   is_trashed: number;
   folder_id: string | null;
   imported_at: string;
-  /** 0 grayscale-dominant, 1 chromatic; missing on older rows until reindex or re-import. */
-  indexed_chromatic?: number | null;
-  /** Dominant 30° hue bin and strength once thumb index runs — used for filters & Similar colors. */
-  indexed_hue_bucket?: number | null;
-  indexed_hue_strength?: number | null;
-  indexed_hue_degrees?: number | null;
-  indexed_hue_bucket_2?: number | null;
-  indexed_hue_strength_2?: number | null;
 }
 
 export interface Tag {

@@ -52,15 +52,15 @@ export function DetailPanel() {
 
   useEffect(() => {
     if (!selectedImageId) return;
-    api.getImage(selectedImageId).then((img) => {
+    api.getImage(selectedImageId).then((img: ImageRecord | null) => {
       setImage(img);
       lastImageRef.current = img;
     });
-    api.getColorsForImage(selectedImageId).then((c) => {
+    api.getColorsForImage(selectedImageId).then((c: ImageColor[]) => {
       setColors(c);
       lastColorsRef.current = c;
     });
-    api.getTagsForImage(selectedImageId).then((t) => {
+    api.getTagsForImage(selectedImageId).then((t: TagWithMeta[]) => {
       setTags(t);
       lastTagsRef.current = t;
     });
@@ -111,7 +111,7 @@ export function DetailPanel() {
       style={{ transitionTimingFunction: 'cubic-bezier(0.2, 0.9, 0.3, 1)', transitionDuration: '350ms' }}
       onTransitionEnd={handleTransitionEnd}
     >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+      <div className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-gray-800">
         <span className="text-xs text-gray-400 uppercase tracking-wider font-medium">Details</span>
         <button onClick={() => setSelectedImage(null)} className="text-gray-500 hover:text-gray-300">
           <X size={14} />
@@ -154,7 +154,8 @@ export function DetailPanel() {
             />
           ) : (
             <p
-              className="text-sm text-gray-200 cursor-pointer hover:text-white"
+              className="text-sm text-gray-200 cursor-pointer hover:text-white truncate"
+              title={displayImage.title || 'Untitled'}
               onClick={() => { setEditingTitle(true); setTitleValue(displayImage.title); }}
             >
               {displayImage.title || 'Untitled'}

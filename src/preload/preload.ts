@@ -1,8 +1,14 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import os from 'node:os';
 
 import type { SimilarRefineMode } from '../shared/similar-refine';
 
 let currentFolderId: string | null = null;
+
+/** Cache the username at preload time — it doesn't change while the app is running. */
+const localUsername = (() => {
+  try { return os.userInfo().username; } catch { return ''; }
+})();
 
 const api = {
   // Folders
@@ -33,8 +39,6 @@ const api = {
 
   // Colors
   getColorsForImage: (imageId: string) => ipcRenderer.invoke('colors:getForImage', imageId),
-  /** Fills `indexed_chromatic`, hue bucket, strength, and mean hue from each thumbnail. */
-  reindexChromaticFlags: () => ipcRenderer.invoke('colors:reindexChromaticFlags'),
 
   // Import
   importFiles: (filePaths: string[], folderId: string | null) =>
@@ -54,16 +58,10 @@ const api = {
   },
 
   // AI
-  getAIStatus: () => ipcRenderer.invoke('ai:status'),
-  autoTag: (imageId: string) => ipcRenderer.invoke('ai:autoTag', imageId),
   reanalyzeImages: (imageIds: string[]) => ipcRenderer.invoke('ai:reanalyzeImages', imageIds),
   searchByText: (query: string) => ipcRenderer.invoke('ai:searchByText', query),
-  findSimilar: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
-    ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),
   getSimilarImages: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
     ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),
-  getEmbeddingCount: () => ipcRenderer.invoke('ai:embeddingCount'),
-  generateMissingEmbeddings: () => ipcRenderer.invoke('ai:generateMissingEmbeddings'),
 
   embeddingsHasForImage: (imageId: string) => ipcRenderer.invoke('embeddings:hasForImage', imageId),
   getSimilarityPrefs: () => ipcRenderer.invoke('settings:getSimilarityPrefs'),
@@ -108,6 +106,9 @@ const api = {
 
   // Debug
   log: (msg: string) => ipcRenderer.send('log', msg),
+
+  /** Local macOS account name (e.g. "brian.lin"). Used as a personalized app title. */
+  getLocalUsername: () => localUsername,
 
   // File protocol for displaying local images
   getFileUrl: (filePath: string) => `local-file://${filePath}`,
