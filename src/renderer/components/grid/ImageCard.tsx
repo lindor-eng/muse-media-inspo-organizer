@@ -164,13 +164,21 @@ export function ImageCard({ image }: Props) {
           loading="lazy"
         />
         {isBulkSelected ? (
-          <div className="absolute top-1.5 left-1.5 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+          // White halo + softer dark outer ring (#333) keep the blue chip visible across light
+          // and dark thumbnails alike.
+          <div
+            className="absolute top-1.5 left-1.5 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center"
+            style={{ boxShadow: '0 0 0 1.5px rgba(255,255,255,0.9), 0 0 0 2.25px #666666' }}
+          >
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="text-white">
               <path d="M2 5L4 7L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </div>
         ) : isCmdHeld && (
-          <div className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-2 border-white/60" />
+          <div
+            className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full border-[1.5px] border-white/95 bg-white/10"
+            style={{ boxShadow: '0 0 0 0.75px #666666' }}
+          />
         )}
       </div>
 
