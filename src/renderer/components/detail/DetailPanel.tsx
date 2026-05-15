@@ -118,16 +118,7 @@ export function DetailPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="p-3">
-          <img
-            src={`local-file://${displayImage.thumbnail_path || displayImage.original_path}`}
-            alt={displayImage.title}
-            className="w-full rounded-lg bg-gray-800"
-          />
-
-        </div>
-
+      <div className="flex-1 overflow-y-auto pt-3">
         {displayColors.length > 0 && (
           <div className="px-4 pb-3 flex items-center gap-1.5">
             {displayColors.map((color) => (

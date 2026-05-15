@@ -211,7 +211,7 @@ export function SimilarImagesStrip({
 
   return (
     <div className="relative space-y-2">
-      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-2 md:gap-4">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-4">
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-1.5 min-w-0">
             <p className="text-xs text-gray-500 shrink-0">{title}</p>
@@ -219,7 +219,7 @@ export function SimilarImagesStrip({
               <div className="relative shrink-0 max-w-[10.5rem]">
                 <select
                   aria-label="Likeness lens"
-                  className={`appearance-none w-full rounded border pl-2 pr-7 py-0.5 text-[10px] tabular-nums bg-gray-950 cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500/60 ${
+                  className={`appearance-none w-full rounded border pl-2 pr-5 py-0.5 text-[10px] tabular-nums bg-gray-950 cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500/60 ${
                     similarityPreset.similarityFloor == null
                       ? 'border-amber-900/70 text-amber-500/95'
                       : 'border-gray-800 text-gray-400'
@@ -240,7 +240,11 @@ export function SimilarImagesStrip({
                   <option value="none">Wide (Default)</option>
                 </select>
                 <ChevronDown
-                  className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-600"
+                  className="pointer-events-none absolute right-1 h-3 w-3 text-gray-600"
+                  // Native <select> renders its label baseline below the geometric center, so
+                  // a top-1/2 -translate-y-1/2 chevron looks pushed up. Anchor the icon to the
+                  // bottom of the box and lift it by a hair so it sits on the visible glyph axis.
+                  style={{ bottom: 3 }}
                   strokeWidth={2}
                   aria-hidden
                 />
@@ -255,7 +259,10 @@ export function SimilarImagesStrip({
                   e.stopPropagation();
                   onInspectorGearClick?.();
                 }}
-                className={`p-1 rounded shrink-0 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors ${inspectorSettingsOpen ? 'text-blue-400 bg-gray-800/90' : ''}`}
+                className={`p-0.5 rounded shrink-0 text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors ${inspectorSettingsOpen ? 'text-blue-400 bg-gray-800/90' : ''}`}
+                // Match the visible text baseline of the dropdown chip (text sits below the
+                // geometric center inside <select>), so the gear lands on the same axis.
+                style={{ transform: 'translateY(1px)' }}
               >
                 <Settings size={13} strokeWidth={1.75} />
               </button>
