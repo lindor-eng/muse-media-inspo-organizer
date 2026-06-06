@@ -15,6 +15,8 @@ import {
   type SimilarityPrefs,
 } from './database/similarity-prefs';
 import { isModelAvailable, pullModel, isOllamaServerRunning } from './ai/ollama-server';
+import { exportLibrary } from './library-export';
+import { inspectImport, applyImport, cancelImport } from './library-import';
 
 export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): void {
   const folderRepo = createFolderRepo(db);
@@ -249,6 +251,37 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     if (img.isEmpty()) return false;
     clipboard.writeImage(img);
     return true;
+  });
+
+  // Library export / import
+  function broadcastLibraryProgress(channel: string, payload: unknown): void {
+    const win = BrowserWindow.getAllWindows()[0];
+    win?.webContents.send(channel, payload);
+  }
+
+  ipcMain.handle('library:export', async (_, destZipPath: string) => {
+    return exportLibrary(db, destZipPath, (p) => {
+      broadcastLibraryProgress('library:export:progress', p);
+    });
+  });
+
+  ipcMain.handle('library:inspectImport', async (_, zipPath: string) => {
+    return inspectImport(db, zipPath, (p) => {
+      broadcastLibraryProgress('library:import:progress', p);
+    });
+  });
+
+  ipcMain.handle(
+    'library:applyImport',
+    async (_, args: { sessionId: string; decisions: Record<string, 'replace' | 'keep'> }) => {
+      return applyImport(db, args, (p) => {
+        broadcastLibraryProgress('library:import:progress', p);
+      });
+    },
+  );
+
+  ipcMain.handle('library:cancelImport', (_, sessionId: string) => {
+    cancelImport(sessionId);
   });
 
   // Ollama model setup

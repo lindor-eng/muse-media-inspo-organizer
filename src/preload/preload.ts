@@ -112,6 +112,49 @@ const api = {
 
   // File protocol for displaying local images
   getFileUrl: (filePath: string) => `local-file://${filePath}`,
+
+  // Native menu events ("File → …") forwarded from the main process to the renderer.
+  onMenuEvent: (channel: 'menu:importFiles' | 'menu:exportLibrary' | 'menu:importLibrary', callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on(channel, handler);
+    return () => { ipcRenderer.removeListener(channel, handler); };
+  },
+
+  // Library export / import dialogs and IPC.
+  chooseSaveLibraryBundle: () => ipcRenderer.invoke('dialog:saveLibraryBundle') as Promise<string | null>,
+  chooseOpenLibraryBundle: () => ipcRenderer.invoke('dialog:openLibraryBundle') as Promise<string | null>,
+  exportLibrary: (destZipPath: string) =>
+    ipcRenderer.invoke('library:export', destZipPath) as Promise<{
+      originalsCount: number;
+      thumbnailsCount: number;
+      bytes: number;
+    }>,
+  inspectImportLibrary: (zipPath: string) => ipcRenderer.invoke('library:inspectImport', zipPath),
+  applyImportLibrary: (sessionId: string, decisions: Record<string, 'replace' | 'keep'>) =>
+    ipcRenderer.invoke('library:applyImport', { sessionId, decisions }) as Promise<{
+      added: number;
+      replaced: number;
+      kept: number;
+    }>,
+  cancelImportLibrary: (sessionId: string) => ipcRenderer.invoke('library:cancelImport', sessionId) as Promise<void>,
+  onLibraryExportProgress: (
+    callback: (p: { phase: 'snapshot' | 'archive' | 'finalize'; current: number; total: number }) => void,
+  ) => {
+    const handler = (_: unknown, p: { phase: 'snapshot' | 'archive' | 'finalize'; current: number; total: number }) =>
+      callback(p);
+    ipcRenderer.on('library:export:progress', handler);
+    return () => { ipcRenderer.removeListener('library:export:progress', handler); };
+  },
+  onLibraryImportProgress: (
+    callback: (p: { phase: 'extract' | 'inspect' | 'apply' | 'finalize'; current: number; total: number }) => void,
+  ) => {
+    const handler = (
+      _: unknown,
+      p: { phase: 'extract' | 'inspect' | 'apply' | 'finalize'; current: number; total: number },
+    ) => callback(p);
+    ipcRenderer.on('library:import:progress', handler);
+    return () => { ipcRenderer.removeListener('library:import:progress', handler); };
+  },
 };
 
 export type ElectronAPI = typeof api;

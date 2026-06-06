@@ -10,6 +10,8 @@ export default defineConfig({
         'chokidar',
         'node-vibrant',
         'node-vibrant/node',
+        'archiver',
+        'extract-zip',
       ],
       output: {
         entryFileNames: '[name].js',

@@ -3,11 +3,13 @@ import { Sidebar } from '../sidebar/Sidebar';
 import { ContentGrid } from '../grid/ContentGrid';
 import { DetailPanel } from '../detail/DetailPanel';
 import { ImageFocus } from '../grid/ImageFocus';
+import { LibraryExport } from './LibraryExport';
+import { LibraryImportDialog } from './LibraryImportDialog';
 import { useAppStore } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
 export function AppShell() {
-  const { selectedImageId, theme, refreshAll, fetchSimilarImages } = useAppStore();
+  const { selectedImageId, theme, refreshAll, fetchSimilarImages, importFiles } = useAppStore();
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -111,8 +113,22 @@ export function AppShell() {
     };
 
     // Manual escape hatch — pressing Escape always clears the overlay even if the watchdog missed it.
+    // Also: +/- adjust the grid thumbnail size when no input is focused and ImageFocus isn't open
+    // (in focus mode +/- belong to the zoom slider).
+    const THUMB_KEY_STEP = 24;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') clearOverlay();
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+      if (useAppStore.getState().selectedImageId) return;
+
+      // Both '+' (Shift+=) and the bare '=' bump up; '-' bumps down.
+      const isPlus = e.key === '+' || e.key === '=';
+      const isMinus = e.key === '-' || e.key === '_';
+      if (!isPlus && !isMinus) return;
+      e.preventDefault();
+      const { gridThumbHeight, setGridThumbHeight } = useAppStore.getState();
+      setGridThumbHeight(gridThumbHeight + (isPlus ? THUMB_KEY_STEP : -THUMB_KEY_STEP));
     };
 
     document.addEventListener('dragenter', handleDragEnter);
@@ -146,6 +162,14 @@ export function AppShell() {
     fetchSimilarImages(selectedImageId ?? null);
   }, [selectedImageId, fetchSimilarImages]);
 
+  // File → Import Files… opens the existing system file picker and feeds importFiles.
+  useEffect(() => {
+    return api.onMenuEvent('menu:importFiles', async () => {
+      const filePaths = await window.electronAPI.openFileDialog();
+      if (filePaths.length > 0) await importFiles(filePaths);
+    });
+  }, [importFiles]);
+
   return (
     <div className={`h-screen flex overflow-hidden ${theme === 'dark' ? 'dark' : ''}`}>
       <Sidebar />
@@ -154,6 +178,8 @@ export function AppShell() {
         {selectedImageId && <ImageFocus />}
       </div>
       <DetailPanel />
+      <LibraryExport />
+      <LibraryImportDialog />
       {isDragging && (
         <div className="fixed inset-0 bg-blue-500/10 border-2 border-dashed border-blue-500 z-50 flex items-center justify-center pointer-events-none">
           <div className="bg-gray-900 px-6 py-4 rounded-xl border border-blue-500 shadow-2xl">

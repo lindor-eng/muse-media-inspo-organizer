@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, nativeTheme, protocol, net } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, nativeTheme, protocol, net, Menu } from 'electron';
+import type { MenuItemConstructorOptions } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { initDatabase } from './database/connection';
@@ -44,6 +45,33 @@ const createWindow = () => {
   });
 };
 
+function buildAppMenu(): void {
+  const sendToRenderer = (channel: string) => () => {
+    BrowserWindow.getFocusedWindow()?.webContents.send(channel);
+  };
+
+  const template: MenuItemConstructorOptions[] = [
+    { role: 'appMenu' },
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Import Files…',
+          accelerator: 'CmdOrCtrl+O',
+          click: sendToRenderer('menu:importFiles'),
+        },
+        { type: 'separator' },
+        { label: 'Export Library…', click: sendToRenderer('menu:exportLibrary') },
+        { label: 'Import Library…', click: sendToRenderer('menu:importLibrary') },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.on('ready', async () => {
   protocol.handle('local-file', (request) => {
     const filePath = decodeURIComponent(request.url.replace('local-file://', ''));
@@ -52,6 +80,7 @@ app.on('ready', async () => {
 
   const db = initDatabase();
   registerIpcHandlers(db, ipcMain);
+  buildAppMenu();
   createWindow();
 
   // Start managed Ollama server in background
@@ -102,6 +131,25 @@ ipcMain.handle('dialog:openFiles', async () => {
     ],
   });
   return result.filePaths;
+});
+
+ipcMain.handle('dialog:saveLibraryBundle', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const result = await dialog.showSaveDialog({
+    title: 'Export Muse Library',
+    defaultPath: `Muse Library ${today}.muse`,
+    filters: [{ name: 'Muse Library', extensions: ['muse'] }],
+  });
+  return result.canceled ? null : result.filePath ?? null;
+});
+
+ipcMain.handle('dialog:openLibraryBundle', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Import Muse Library',
+    properties: ['openFile'],
+    filters: [{ name: 'Muse Library', extensions: ['muse'] }],
+  });
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
 });
 
 ipcMain.handle('app:getDataPath', () => {
