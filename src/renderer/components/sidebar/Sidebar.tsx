@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useLayoutEffect } from 'react';
-import { Images, Tag, Trash2, FolderOpen, Plus, ChevronRight, ChevronDown, Inbox, Pencil, Trash } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Images, Tag, Trash2, LayoutGrid, Plus, ChevronRight, ChevronDown, Pencil, Trash, HelpCircle } from 'lucide-react';
 import { useAppStore, type Folder, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
 export function Sidebar() {
-  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, createFolder, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder, sidebarWidth, setSidebarWidth } = useAppStore();
+  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder, sidebarWidth, setSidebarWidth, setMoodboardModalOpen } = useAppStore();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   // Section-level collapse for the Folders / Tags groups. Persisted so the layout sticks across launches.
   const [foldersCollapsed, setFoldersCollapsed] = useState<boolean>(() => {
@@ -93,13 +94,32 @@ export function Sidebar() {
     }
     prevRectsRef.current = next;
   });
-  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
   const [trashContextMenu, setTrashContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
+  const [helpAnchor, setHelpAnchor] = useState<{ top: number; left: number } | null>(null);
+
+  // Re-measure the icon's screen position whenever the popover is open so it tracks resize/scroll.
+  useEffect(() => {
+    if (!helpOpen) return;
+    const measure = () => {
+      const el = helpButtonRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setHelpAnchor({ top: r.top, left: r.right + 12 });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [helpOpen]);
   /** Active folder reorder drag — id of the folder being dragged. */
   const [draggingFolderId, setDraggingFolderId] = useState<string | null>(null);
   /** Live preview ordering during a drag: maps parent_id → ordered child ids.
@@ -188,16 +208,6 @@ export function Sidebar() {
       return next;
     });
   };
-
-  const handleCreateFolder = () => {
-    if (newFolderName.trim()) {
-      createFolder(newFolderName.trim());
-      setNewFolderName('');
-      setIsCreatingFolder(false);
-    }
-  };
-
-  const getChildren = (parentId: string): Folder[] => orderedSiblings(parentId);
 
   const handleFolderDrop = async (e: React.DragEvent, folderId: string) => {
     e.preventDefault();
@@ -343,7 +353,7 @@ export function Sidebar() {
             setContextMenu({ folderId: folder.id, x: e.clientX, y: e.clientY });
           }}
         >
-          <FolderOpen size={14} className="shrink-0 text-yellow-500" />
+          <LayoutGrid size={14} className="shrink-0 text-blue-400" />
           {isRenaming ? (
             <input
               type="text"
@@ -381,11 +391,98 @@ export function Sidebar() {
       className="shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col h-full overflow-hidden relative"
       style={{ width: sidebarWidth }}
     >
-      <div className="h-12 shrink-0 flex items-center px-3 border-b border-gray-800">
-        <h1 className="text-sm font-semibold text-gray-200 px-2 truncate">
+      <div className="h-12 shrink-0 flex items-center px-5 border-b border-gray-800">
+        <h1 className="text-sm font-semibold text-gray-200 truncate flex-1">
           {window.electronAPI.getLocalUsername() || 'Muse'}
         </h1>
+        <div
+          className="relative"
+          onMouseEnter={() => setHelpOpen(true)}
+          onMouseLeave={() => setHelpOpen(false)}
+        >
+          <button
+            ref={helpButtonRef}
+            type="button"
+            aria-label="Keyboard shortcuts"
+            onFocus={() => setHelpOpen(true)}
+            onBlur={() => setHelpOpen(false)}
+            className="text-gray-500 hover:text-gray-300 transition-colors p-0.5 -m-0.5 rounded block"
+          >
+            <HelpCircle size={14} />
+          </button>
+        </div>
       </div>
+      {createPortal(
+        <div
+          role="tooltip"
+          onMouseEnter={() => setHelpOpen(true)}
+          onMouseLeave={() => setHelpOpen(false)}
+          style={{
+            position: 'fixed',
+            top: helpAnchor?.top ?? 0,
+            left: helpAnchor?.left ?? 0,
+          }}
+          className={`z-[9999] w-72 rounded-lg rounded-tl-none border border-gray-700 bg-gray-900/95 backdrop-blur-sm shadow-xl px-4 py-3 text-xs text-gray-300 transition-opacity duration-200 ease-out ${helpOpen && helpAnchor ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        >
+          {/* Tail pointing left toward the ? icon. A 10px square rotated 45° with border on its
+              left+bottom sides becomes a "<" outline. The diamond's center sits on the popover's
+              left edge (left: -5 since the square is 10px wide), with its top vertex exactly at the
+              popover's top-left corner — that corner is squared off so the diamond's upper edge
+              meets the popover's top border at the same point. The diamond's fill matches the
+              popover bg, hiding the popover's left border where the right half of the diamond
+              overlaps it. */}
+          <div
+            aria-hidden
+            className="absolute w-2.5 h-2.5 bg-gray-900/95 border-l border-b border-gray-700"
+            style={{ top: 2, left: -5, transform: 'rotate(45deg)' }}
+          />
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
+            Main Grid
+          </div>
+          <ul className="space-y-1.5 mb-3">
+            <li className="flex items-center justify-between gap-3">
+              <span>Bigger thumbnails</span>
+              <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">+</kbd>
+            </li>
+            <li className="flex items-center justify-between gap-3">
+              <span>Smaller thumbnails</span>
+              <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">−</kbd>
+            </li>
+            <li className="flex items-center justify-between gap-3">
+              <span>Multi-select</span>
+              <span className="flex items-center gap-1">
+                <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">⌘</kbd>
+                <span className="text-gray-500">+ click</span>
+              </span>
+            </li>
+          </ul>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
+            Image Focus
+          </div>
+          <ul className="space-y-1.5">
+            <li className="flex items-center justify-between gap-3">
+              <span>Previous image</span>
+              <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">←</kbd>
+            </li>
+            <li className="flex items-center justify-between gap-3">
+              <span>Next image</span>
+              <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">→</kbd>
+            </li>
+            <li className="flex items-center justify-between gap-3">
+              <span>Copy image</span>
+              <span className="flex items-center gap-1">
+                <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">⌘</kbd>
+                <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">C</kbd>
+              </span>
+            </li>
+            <li className="flex items-center justify-between gap-3">
+              <span>Close focus view</span>
+              <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-200">Esc</kbd>
+            </li>
+          </ul>
+        </div>,
+        document.body,
+      )}
 
       <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
         {/* Quick filters */}
@@ -397,16 +494,6 @@ export function Sidebar() {
           <Images size={14} />
           <span className="flex-1 text-left">All</span>
           <span className="text-xs text-gray-500">{counts.total}</span>
-        </button>
-
-        <button
-          className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors
-            ${viewMode === 'uncategorized' ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-white/5'}`}
-          onClick={() => setViewMode('uncategorized')}
-        >
-          <Inbox size={14} />
-          <span className="flex-1 text-left">Uncategorized</span>
-          <span className="text-xs text-gray-500">{counts.uncategorized}</span>
         </button>
 
         <button
@@ -440,7 +527,7 @@ export function Sidebar() {
               onClick={toggleFolders}
               className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-300"
             >
-              Folders
+              Boards
               <ChevronDown
                 size={12}
                 className="transition-transform duration-200 ease-out"
@@ -448,8 +535,9 @@ export function Sidebar() {
               />
             </button>
             <button
-              onClick={() => setIsCreatingFolder(true)}
+              onClick={() => setMoodboardModalOpen(true)}
               className="p-0.5 -mr-1.5 text-gray-500 hover:text-gray-300 rounded"
+              aria-label="New folder"
             >
               <Plus size={14} />
             </button>
@@ -463,24 +551,6 @@ export function Sidebar() {
                 ['--cascade-stagger' as string]: `${cascadeStagger(visibleFolderCount())}ms`,
               }}
             >
-              {isCreatingFolder && (
-                <div className="px-3 py-1">
-                  <input
-                    type="text"
-                    value={newFolderName}
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleCreateFolder();
-                      if (e.key === 'Escape') setIsCreatingFolder(false);
-                    }}
-                    onBlur={handleCreateFolder}
-                    autoFocus
-                    placeholder="Folder name..."
-                    className="w-full px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-              )}
-
               {(() => {
                 // Flatten the folder tree to a render list with stable cascade indices so nested
                 // expanded children stagger after their parents.

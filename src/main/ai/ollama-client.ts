@@ -19,12 +19,22 @@ export async function isOllamaRunning(): Promise<boolean> {
   }
 }
 
+/**
+ * Vision + generation model. Qwen3-VL replaces LLaVA for its far stronger OCR and
+ * screenshot/layout understanding — most of this library is UI shots and graphic design,
+ * and caption text is what search embeddings are built from. Must be the -instruct
+ * variant: the base qwen3-vl:8b is a thinking model and Ollama 0.23 ignores
+ * `think: false` for it, burning the whole num_predict budget on chain-of-thought
+ * (~58s/image with empty responses vs ~7s with instruct).
+ */
+export const VISION_MODEL = 'qwen3-vl:8b-instruct';
+
 export async function unloadModel(): Promise<void> {
   try {
     await fetch(`${getBaseUrl()}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'llava:7b-v1.6-mistral-q4_K_M', keep_alive: 0 }),
+      body: JSON.stringify({ model: VISION_MODEL, keep_alive: 0 }),
     });
   } catch {
     // Non-critical
@@ -34,6 +44,24 @@ export async function unloadModel(): Promise<void> {
 const EMBED_MODEL = 'nomic-embed-text';
 /** nomic-embed-text returns 768-dim vectors. Cached from the first successful call. */
 let cachedEmbedDim: number | null = null;
+
+/**
+ * nomic-embed-text is trained with task-instruction prefixes: corpus text must be embedded
+ * as `search_document: …` and queries as `search_query: …`. Omitting them puts both sides
+ * in the same (wrong) region of the space and measurably degrades retrieval.
+ */
+export const EMBED_QUERY_PREFIX = 'search_query: ';
+export const EMBED_DOCUMENT_PREFIX = 'search_document: ';
+
+/** Embed user query text (prompt, search bar input) for retrieval against document embeddings. */
+export function embedQuery(text: string): Promise<number[] | null> {
+  return embedText(text ? EMBED_QUERY_PREFIX + text : text);
+}
+
+/** Embed corpus text (caption + notes + tags) for storage in the search index. */
+export function embedDocument(text: string): Promise<number[] | null> {
+  return embedText(text ? EMBED_DOCUMENT_PREFIX + text : text);
+}
 
 export function getEmbedDim(): number | null {
   return cachedEmbedDim;
@@ -61,6 +89,44 @@ export async function embedText(text: string): Promise<number[] | null> {
   }
 }
 
+/**
+ * HyDE-style prompt expansion: ask the vision model's LLM side (text-only call) to write
+ * hypothetical alt-text captions for images that would match the moodboard brief. Library
+ * embeddings are built from model-written captions, so matching that register closes the
+ * design-brief → caption vocabulary gap. Returns [] on any failure — callers fall back to
+ * the direct query embedding.
+ */
+export async function generateHypotheticalCaptions(brief: string, count = 3): Promise<string[]> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        prompt: `You write alt-text captions for images in a design library.
+A user is building a moodboard described as: "${brief}"
+
+Write ${count} captions, each describing a DIFFERENT image that would fit this moodboard perfectly. Write in plain alt-text style: 1-2 sentences naming concrete subjects, setting, colors, and lighting. No preamble.
+
+Respond with exactly ${count} lines, numbered like "1. ..."`,
+        stream: false,
+        options: { temperature: 0.7, num_predict: 260 },
+      }),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { response?: string };
+    if (!data.response) return [];
+    return data.response
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*(?:\d+[.)]\s*|[-*•]\s*)/, '').trim())
+      .filter((line) => line.length >= 20 && line.length <= 400)
+      .slice(0, count);
+  } catch (err) {
+    console.warn('[ollama] caption expansion failed:', err);
+    return [];
+  }
+}
+
 export async function getAvailableModels(): Promise<string[]> {
   try {
     const res = await fetch(`${getBaseUrl()}/api/tags`);
@@ -84,9 +150,11 @@ export async function describeImage(imagePath: string): Promise<string> {
 }
 
 async function getImageAsBase64(imagePath: string): Promise<string> {
-  // Always convert through sharp to ensure compatible format and reasonable size
+  // Always convert through sharp to ensure compatible format and reasonable size.
+  // 1024px: Qwen3-VL's dynamic-resolution encoder actually uses the extra pixels
+  // to read UI text and small type that were illegible at 768.
   const buffer = await sharp(imagePath)
-    .resize(768, 768, { fit: 'inside', withoutEnlargement: true })
+    .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
     .png()
     .toBuffer();
   return buffer.toString('base64');
@@ -101,11 +169,11 @@ export async function analyzeImage(imagePath: string): Promise<ImageAnalysis> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'llava:7b-v1.6-mistral-q4_K_M',
-      prompt: `Analyze this image and respond in exactly this format:
+      model: VISION_MODEL,
+      prompt: `Analyze this image for a designer's reference library and respond in exactly this format, with each field on its own line:
 Alt: [1-2 sentences describing the image for accessibility, under 200 characters. Be specific about subjects, actions, and setting.]
-Description: [2-3 sentences describing the content, style, mood, composition (e.g. centered, off-center, diagonal), palette (e.g. warm, muted, monochrome), and lighting]
-Tags: [5-10 comma-separated keyword tags for subject, style, mood, colors, medium]`,
+Description: [3-4 sentences for design search. Name the medium (photo, UI screenshot, poster, illustration, 3D render, mockup). Quote prominent visible text verbatim. Describe typography (serif/sans, weight, size contrast), layout and composition (grid, whitespace, alignment, focal point), color palette with specific hues, lighting, texture, and any era or style influence (e.g. Swiss, brutalist, Y2K, editorial, skeuomorphic).]
+Tags: [8-14 comma-separated keyword tags covering subject, medium, style movement, mood, dominant colors, typography traits, and notable techniques]`,
       images: [base64Image],
       stream: false,
       options: { temperature: 0.3, num_ctx: 4096 },
@@ -132,6 +200,14 @@ function cleanField(raw: string): string {
     .trim();
 }
 
+function parseTagList(raw: string): string[] {
+  return cleanField(raw)
+    .split(/[,;]+/)
+    .map((t) => t.trim().toLowerCase().replace(/^[#*-]\s*/, ''))
+    .filter((t) => t.length > 1 && t.length < 30)
+    .slice(0, 14);
+}
+
 function parseAnalysis(response: string): ImageAnalysis {
   // Match "Alt:", "**Alt:**", "Alt text:", or "Alt-text:" at start of a line.
   const altMatch = response.match(/^\s*\**\s*alt(?:[\s-]?text)?\s*:\**\s*(.+)/im);
@@ -140,13 +216,17 @@ function parseAnalysis(response: string): ImageAnalysis {
 
   let altText = altMatch ? cleanField(altMatch[1]) : '';
   let description = descMatch ? cleanField(descMatch[1]) : '';
-  const tags = tagsMatch
-    ? cleanField(tagsMatch[1])
-        .split(/[,;]+/)
-        .map((t) => t.trim().toLowerCase().replace(/^[#*-]\s*/, ''))
-        .filter((t) => t.length > 1 && t.length < 30)
-        .slice(0, 10)
-    : [];
+  let tags = tagsMatch ? parseTagList(tagsMatch[1]) : [];
+
+  // Qwen sometimes runs "Tags: ..." onto the end of the Description paragraph instead
+  // of a new line — peel it off so both fields survive.
+  if (tags.length === 0 && description) {
+    const inline = description.match(/^(.*?)[\s.]*\btags\s*:\s*(.+)$/is);
+    if (inline) {
+      description = inline[1].trim();
+      tags = parseTagList(inline[2]);
+    }
+  }
 
   // Fallback: model emitted free-form prose with only a Tags: line. Treat everything before Tags: as description.
   if (!description && !altText) {

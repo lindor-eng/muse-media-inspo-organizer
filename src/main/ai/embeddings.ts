@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { createImageRepo } from '../database/repositories/images';
 import { createTagRepo } from '../database/repositories/tags';
-import { embedText, isOllamaRunning } from './ollama-client';
+import { embedDocument, isOllamaRunning } from './ollama-client';
 
 export function embeddingVectorToBlob(vec: number[]): Buffer {
   const f32 = new Float32Array(vec);
@@ -66,7 +66,7 @@ export async function embedAndStoreForImage(db: Database.Database, imageId: stri
 
   if (!(await isOllamaRunning())) return false;
 
-  const vec = await embedText(text);
+  const vec = await embedDocument(text);
   if (!vec?.length) return false;
 
   upsertImageEmbedding(db, imageId, l2Normalize(vec));
@@ -78,4 +78,59 @@ export async function ensureImageEmbedding(db: Database.Database, imageId: strin
   const existing = db.prepare('SELECT 1 FROM image_embeddings WHERE image_id = ?').get(imageId);
   if (existing) return true;
   return embedAndStoreForImage(db, imageId);
+}
+
+const EMBEDDING_INDEX_VERSION_KEY = 'embedding_index_version';
+/** v2 = nomic task prefixes (search_document:/search_query:). v1 (implicit) = raw unprefixed text. */
+const EMBEDDING_INDEX_VERSION = 2;
+
+/**
+ * Re-embed the whole library when the index format changes. Runs on startup; if Ollama
+ * isn't up or the run is interrupted the version key stays unbumped and the next launch
+ * retries the full set (embedding is idempotent, ~30ms/image on the 137M model).
+ * Returns null when nothing needed doing.
+ */
+export async function upgradeEmbeddingIndexIfNeeded(
+  db: Database.Database,
+  onProgress?: (current: number, total: number) => void,
+): Promise<{ reembedded: number; total: number } | null> {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(EMBEDDING_INDEX_VERSION_KEY) as
+    | { value: string }
+    | undefined;
+  const current = row ? Number(row.value) : 1;
+  if (Number.isFinite(current) && current >= EMBEDDING_INDEX_VERSION) return null;
+
+  const setVersion = () =>
+    db
+      .prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(EMBEDDING_INDEX_VERSION_KEY, String(EMBEDDING_INDEX_VERSION));
+
+  // Trashed images are included on purpose — a later restore should not resurrect a stale vector.
+  const ids = (
+    db
+      .prepare(
+        `
+    SELECT e.image_id AS id FROM image_embeddings e
+    INNER JOIN images i ON i.id = e.image_id
+  `,
+      )
+      .all() as Array<{ id: string }>
+  ).map((r) => r.id);
+
+  if (ids.length === 0) {
+    setVersion();
+    return { reembedded: 0, total: 0 };
+  }
+
+  if (!(await isOllamaRunning())) return null;
+
+  let reembedded = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const wrote = await embedAndStoreForImage(db, ids[i]).catch(() => false);
+    if (wrote) reembedded++;
+    onProgress?.(i + 1, ids.length);
+  }
+
+  if (reembedded === ids.length) setVersion();
+  return { reembedded, total: ids.length };
 }

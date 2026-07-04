@@ -59,7 +59,10 @@ const api = {
 
   // AI
   reanalyzeImages: (imageIds: string[]) => ipcRenderer.invoke('ai:reanalyzeImages', imageIds),
-  searchByText: (query: string) => ipcRenderer.invoke('ai:searchByText', query),
+  searchByText: (query: string, limit?: number, opts?: { applySimilarityFloor?: boolean }) =>
+    ipcRenderer.invoke('ai:searchByText', query, limit, opts),
+  searchForMoodboard: (prompt: string, limit?: number) =>
+    ipcRenderer.invoke('ai:searchForMoodboard', prompt, limit),
   getSimilarImages: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
     ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),
 

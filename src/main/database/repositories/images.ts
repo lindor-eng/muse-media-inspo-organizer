@@ -36,6 +36,8 @@ export interface ImageRecord {
   indexed_hue_strength_2: number | null;
   /** 8-byte average-hash perceptual hash for visual near-duplicate / pHash similarity scoring. */
   phash: Buffer | null;
+  /** Caption generation that produced alt/notes/tags — see CAPTIONS_VERSION in auto-tagger. */
+  captions_version: number | null;
 }
 
 export interface ImageFilter {
@@ -167,6 +169,10 @@ export function createImageRepo(db: Database.Database) {
       db.prepare('UPDATE images SET phash = ?, updated_at = datetime(\'now\') WHERE id = ?').run(phash, id);
     },
 
+    setCaptionsVersion(id: string, version: number): void {
+      db.prepare('UPDATE images SET captions_version = ? WHERE id = ?').run(version, id);
+    },
+
     trash(id: string): void {
       trashStmt.run(id);
     },
@@ -177,6 +183,13 @@ export function createImageRepo(db: Database.Database) {
 
     deletePermanently(id: string): void {
       deleteStmt.run(id);
+      // vec0 virtual tables don't participate in ON DELETE CASCADE — clean up explicitly
+      // or the orphaned vector keeps consuming KNN result slots forever.
+      try {
+        db.prepare('DELETE FROM image_embeddings WHERE image_id = ?').run(id);
+      } catch {
+        // Embedding table may not exist yet (fresh DB before first index).
+      }
     },
 
     getTotalCount(): number {

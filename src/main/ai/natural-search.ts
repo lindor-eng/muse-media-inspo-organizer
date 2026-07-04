@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3';
 import { createImageRepo, type ImageRecord as DbImageRecord } from '../database/repositories/images';
 import { blobToFloat32Vector, ensureImageEmbedding, embedAndStoreForImage, l2Normalize } from './embeddings';
-import { embedText, isOllamaRunning } from './ollama-client';
+import { embedQuery, generateHypotheticalCaptions, isOllamaRunning } from './ollama-client';
+import { extractColorIntent, paletteIntentScore } from './prompt-color';
 import { phashSimilarity, phashHamming, blobToPhash, computePHash, phashToBlob } from './phash';
 import { likenessDisplayPercentRounded } from '../../shared/visual-similarity';
 import { dominantHueAxisMultiplier, dualDominantHueBoost, hueBinRingSteps } from '../../shared/image-color-index';
@@ -220,11 +221,26 @@ async function searchByEmbedding(
   db: Database.Database,
   embedding: number[],
   limit: number,
-): Promise<SimilarResult[]> {
+): Promise<Array<{ image_id: string; cosine: number }>> {
   const queryVec = Float32Array.from(embedding);
 
   try {
-    const results = db
+    // The vec0 KNN can't join against images, so trashed/orphaned embedding rows would
+    // consume result slots — over-fetch by exactly that many, filter, then cut to `limit`.
+    const deadRows = (
+      db
+        .prepare(
+          `
+      SELECT COUNT(*) AS c
+      FROM image_embeddings e
+      LEFT JOIN images i ON i.id = e.image_id
+      WHERE i.id IS NULL OR i.is_trashed != 0
+    `,
+        )
+        .get() as { c: number }
+    ).c;
+
+    const knn = db
       .prepare(
         `
       SELECT image_id, distance
@@ -234,23 +250,148 @@ async function searchByEmbedding(
       LIMIT ?
     `,
       )
-      .all(JSON.stringify(embedding), limit) as SimilarResult[];
+      .all(JSON.stringify(embedding), limit + deadRows) as Array<{ image_id: string; distance: number }>;
+
     const imageRepo = createImageRepo(db);
-    return results.filter((row) => {
+    const out: Array<{ image_id: string; cosine: number }> = [];
+    for (const row of knn) {
       const img = imageRepo.getById(row.image_id);
-      return img && img.is_trashed === 0;
-    });
+      if (!img || img.is_trashed !== 0) continue;
+      // vec0 reports L2 distance; on unit vectors d² = 2 − 2·cos.
+      const d = Number(row.distance);
+      out.push({ image_id: row.image_id, cosine: 1 - (d * d) / 2 });
+      if (out.length >= limit) break;
+    }
+    return out;
   } catch {
     const ranked = await rankByEmbeddingBrute(db, queryVec, limit, null);
-    return ranked.map(({ image_id, similarity }) => ({ image_id, distance: 1 - similarity }));
+    return ranked.map(({ image_id, similarity }) => ({ image_id, cosine: similarity }));
   }
 }
 
-export async function searchByText(db: Database.Database, query: string, limit = 20): Promise<SimilarResult[]> {
+/**
+ * Floors for prompt→library search in curated mode (moodboard). The absolute floor rejects
+ * matches that are semantically unrelated outright; the relative window trims the weak tail
+ * once the prompt has strong matches. On prefixed nomic-embed-text vectors, unrelated
+ * caption text sits around cosine 0.5–0.6 and genuine matches at 0.65+. Calibrated against
+ * a real library — see scripts/simulate-floor.mjs.
+ */
+const TEXT_SEARCH_ABS_MIN_COSINE = 0.62;
+const TEXT_SEARCH_RELATIVE_WINDOW = 0.1;
+
+export interface TextSearchOptions {
+  /** Curated mode: drop weak-tail matches instead of padding out to `limit`. */
+  applySimilarityFloor?: boolean;
+}
+
+export async function searchByText(
+  db: Database.Database,
+  query: string,
+  limit = 20,
+  options?: TextSearchOptions,
+): Promise<SimilarResult[]> {
   if (!(await isOllamaRunning())) return [];
-  const embedding = await embedText(query);
+  const embedding = await embedQuery(query);
   if (!embedding?.length) return [];
-  return searchByEmbedding(db, l2Normalize(embedding), limit);
+  let hits = await searchByEmbedding(db, l2Normalize(embedding), limit);
+  if (options?.applySimilarityFloor && hits.length > 0) {
+    const floor = Math.max(TEXT_SEARCH_ABS_MIN_COSINE, hits[0].cosine - TEXT_SEARCH_RELATIVE_WINDOW);
+    hits = hits.filter((h) => h.cosine >= floor);
+  }
+  return hits.map((h) => ({ image_id: h.image_id, distance: 1 - h.cosine }));
+}
+
+/** Blend weights for moodboard semantic scoring: the user's literal prompt stays dominant;
+    hypothetical captions bridge the brief→caption vocabulary gap. */
+const MOODBOARD_W_DIRECT = 0.65;
+const MOODBOARD_W_HYDE = 0.35;
+/** Palette agreement can shift ranking by ±half this weight around the 0.5 neutral point. */
+const MOODBOARD_COLOR_WEIGHT = 0.16;
+/** Slightly wider than the plain-search window: the HyDE blend lifts top scores, which would
+    otherwise drag the relative floor up and cut marginal-but-on-theme matches. */
+const MOODBOARD_RELATIVE_WINDOW = 0.12;
+
+/**
+ * Prompt→library search tuned for moodboard curation:
+ *  1. Embed the prompt directly.
+ *  2. HyDE expansion — generate hypothetical alt-text captions for images that would fit
+ *     the brief and embed those too (library vectors are built from caption text, so this
+ *     matches their register). All embeddings use the query prefix so cosines stay in one
+ *     comparable space and the calibrated floor still applies.
+ *  3. Union the KNN pools, score semantic = blend(direct, best caption), floor the weak tail.
+ *  4. When the prompt names colors (or B&W), re-rank survivors by actual palette agreement.
+ */
+export async function searchForMoodboard(
+  db: Database.Database,
+  prompt: string,
+  limit = 24,
+): Promise<SimilarResult[]> {
+  if (!(await isOllamaRunning())) return [];
+
+  const directRaw = await embedQuery(prompt);
+  if (!directRaw?.length) return [];
+  const direct = Float32Array.from(l2Normalize(directRaw));
+
+  const captions = await generateHypotheticalCaptions(prompt, 3);
+  const capVecs: Float32Array[] = [];
+  for (const cap of captions) {
+    const v = await embedQuery(cap);
+    if (v?.length === directRaw.length) capVecs.push(Float32Array.from(l2Normalize(v)));
+  }
+
+  // Union of per-vector KNN pools; over-fetch so the blend can reorder freely.
+  const poolSize = Math.min(200, Math.max(limit * 3, limit + 16));
+  const pool = new Set<string>();
+  for (const vec of [direct, ...capVecs]) {
+    const hits = await searchByEmbedding(db, Array.from(vec), poolSize);
+    for (const h of hits) pool.add(h.image_id);
+  }
+  if (pool.size === 0) return [];
+
+  // Exact cosines for every union member against every query vector, from stored blobs.
+  const embStmt = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?');
+  type Cand = { image_id: string; semantic: number };
+  const cands: Cand[] = [];
+  for (const id of pool) {
+    const row = embStmt.get(id) as { embedding: Buffer } | undefined;
+    if (!row) continue;
+    const docVec = blobToFloat32Vector(Buffer.from(row.embedding));
+    const directCos = dotNormalized(direct, docVec);
+    if (!Number.isFinite(directCos)) continue;
+    let bestCap = -1;
+    for (const cv of capVecs) {
+      const c = dotNormalized(cv, docVec);
+      if (Number.isFinite(c) && c > bestCap) bestCap = c;
+    }
+    const semantic =
+      capVecs.length > 0 && bestCap > -1
+        ? MOODBOARD_W_DIRECT * directCos + MOODBOARD_W_HYDE * bestCap
+        : directCos;
+    cands.push({ image_id: id, semantic });
+  }
+  if (cands.length === 0) return [];
+
+  cands.sort((a, b) => b.semantic - a.semantic);
+  const floor = Math.max(TEXT_SEARCH_ABS_MIN_COSINE, cands[0].semantic - MOODBOARD_RELATIVE_WINDOW);
+  let survivors = cands.filter((c) => c.semantic >= floor);
+
+  // Color-aware re-rank: only reorders images that already passed the semantic floor.
+  const intent = extractColorIntent(prompt);
+  if (intent.wantsMonochrome || intent.targets.length > 0) {
+    const paletteStmt = db.prepare(
+      'SELECT hex_color, percentage FROM image_colors WHERE image_id = ? ORDER BY sort_order LIMIT 14',
+    );
+    survivors = survivors
+      .map((c) => {
+        const palette = paletteStmt.all(c.image_id) as Array<{ hex_color: string; percentage: number }>;
+        const colorScore = paletteIntentScore(intent, palette);
+        const adjust = colorScore == null ? 0 : MOODBOARD_COLOR_WEIGHT * (colorScore - 0.5);
+        return { ...c, semantic: c.semantic + adjust };
+      })
+      .sort((a, b) => b.semantic - a.semantic);
+  }
+
+  return survivors.slice(0, limit).map((c) => ({ image_id: c.image_id, distance: 1 - c.semantic }));
 }
 
 /**

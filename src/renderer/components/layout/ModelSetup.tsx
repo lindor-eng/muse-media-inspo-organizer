@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Download, Check, Loader2, Sparkles } from 'lucide-react';
 import { api } from '../../lib/ipc';
 
-const VISION_MODEL = 'llava:7b-v1.6-mistral-q4_K_M';
+const VISION_MODEL = 'qwen3-vl:8b-instruct';
 const EMBED_MODEL = 'nomic-embed-text';
 
 interface PullProgress {
@@ -100,7 +100,7 @@ export function ModelSetup() {
           <>
             <p className="text-sm text-gray-400 mb-6">
               Muse uses local AI models for auto-tagging, alt text, and search:
-              LLaVA for vision (~4.5 GB) and nomic-embed-text for similarity (~274 MB).
+              Qwen3-VL for vision (~6 GB) and nomic-embed-text for similarity (~274 MB).
             </p>
             <button
               onClick={handleDownload}

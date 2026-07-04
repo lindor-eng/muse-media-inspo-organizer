@@ -6,8 +6,13 @@ import { createImageRepo, type ImageFilter } from './database/repositories/image
 import { createTagRepo } from './database/repositories/tags';
 import { importFiles, importFromUrl, importFromBuffer, type ImportResult } from './importer';
 import { extractAndStoreColors } from './color-extractor';
-import { autoTagImage } from './ai/auto-tagger';
-import { searchByText, findSimilarImagesWithPreviews, generateAndStoreEmbedding } from './ai/natural-search';
+import { autoTagImage, CAPTIONS_VERSION } from './ai/auto-tagger';
+import {
+  searchByText,
+  searchForMoodboard,
+  findSimilarImagesWithPreviews,
+  generateAndStoreEmbedding,
+} from './ai/natural-search';
 import { parseSimilarRefineModes } from '../shared/similar-refine';
 import {
   loadSimilarityPrefs,
@@ -18,7 +23,13 @@ import { isModelAvailable, pullModel, isOllamaServerRunning } from './ai/ollama-
 import { exportLibrary } from './library-export';
 import { inspectImport, applyImport, cancelImport } from './library-import';
 
-export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): void {
+export interface IpcHooks {
+  /** Queue a caption refresh (re-analyze + re-embed) for images captioned by an older
+      model/prompt generation. Call after the Ollama server is confirmed up. */
+  queueCaptionUpgradeIfNeeded: () => number;
+}
+
+export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): IpcHooks {
   const folderRepo = createFolderRepo(db);
   const imageRepo = createImageRepo(db);
   const tagRepo = createTagRepo(db);
@@ -78,6 +89,9 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
   // Singleton AI pipeline so concurrent imports never run LLaVA / Ollama in parallel.
   // New images enqueued mid-run extend the in-flight totals instead of starting a second drainer.
   const aiQueue: string[] = [];
+  /** Ids queued for a caption *refresh* (model/prompt upgrade or explicit re-analyze):
+      stale auto-tags and the model-written description get replaced, not accumulated. */
+  const aiRefreshIds = new Set<string>();
   let aiTotal = 0;
   let aiCompleted = 0;
   let aiDraining = false;
@@ -101,9 +115,11 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
         const idx = aiCompleted + 1;
         broadcastAutotag(`Analyzing image ${idx} of ${aiTotal}...`);
         try {
-          await autoTagImage(db, id);
+          await autoTagImage(db, id, { refresh: aiRefreshIds.has(id) });
         } catch (err) {
           console.error('[ai-queue] auto-tag error:', err);
+        } finally {
+          aiRefreshIds.delete(id);
         }
 
         broadcastEmbedding(`Indexing image ${idx} of ${aiTotal}...`);
@@ -192,6 +208,7 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     // Re-analysis shares the singleton queue; we capture our slice's "done" target so the
     // renderer can await fresh metadata before it refreshes the detail panel.
     const myTarget = aiCompleted + (aiQueue.length + imageIds.length);
+    for (const id of imageIds) aiRefreshIds.add(id);
     aiQueue.push(...imageIds);
     aiTotal += imageIds.length;
     broadcastAutotag(`Re-analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
@@ -211,8 +228,21 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     return { processed: imageIds.length, total: imageIds.length };
   });
 
-  ipcMain.handle('ai:searchByText', async (_, query: string) => {
-    return searchByText(db, query);
+  ipcMain.handle('ai:searchByText', async (_, query: string, limit?: number, opts?: unknown) => {
+    const clamped = typeof limit === 'number' && Number.isFinite(limit)
+      ? Math.max(1, Math.min(500, Math.floor(limit)))
+      : undefined;
+    const applySimilarityFloor = Boolean(
+      opts && typeof opts === 'object' && (opts as { applySimilarityFloor?: unknown }).applySimilarityFloor,
+    );
+    return searchByText(db, query, clamped, { applySimilarityFloor });
+  });
+
+  ipcMain.handle('ai:searchForMoodboard', async (_, prompt: string, limit?: number) => {
+    const clamped = typeof limit === 'number' && Number.isFinite(limit)
+      ? Math.max(1, Math.min(500, Math.floor(limit)))
+      : undefined;
+    return searchForMoodboard(db, prompt, clamped);
   });
 
   ipcMain.handle('ai:findSimilar', async (_, imageId: string, opts?: unknown) => {
@@ -300,4 +330,22 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): vo
     });
     return true;
   });
+
+  return {
+    queueCaptionUpgradeIfNeeded(): number {
+      const stale = db
+        .prepare(
+          'SELECT id FROM images WHERE is_trashed = 0 AND COALESCE(captions_version, 1) < ?',
+        )
+        .all(CAPTIONS_VERSION) as Array<{ id: string }>;
+      if (stale.length === 0) return 0;
+
+      for (const { id } of stale) aiRefreshIds.add(id);
+      aiQueue.push(...stale.map((s) => s.id));
+      aiTotal += stale.length;
+      broadcastAutotag(`Upgrading captions ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+      if (!aiDraining) void drainAiQueue();
+      return stale.length;
+    },
+  };
 }

@@ -177,8 +177,34 @@ function ensureImagesPhashColumn(db: Database.Database): void {
   }
 }
 
+/**
+ * Historically deletePermanently didn't remove the image's vector (vec0 ignores CASCADE),
+ * so long-lived libraries carry orphaned embeddings that waste KNN slots. One-shot sweep;
+ * deletes go one-by-one because vec0 doesn't support subquery WHEREs reliably.
+ */
+function cleanupOrphanedEmbeddings(db: Database.Database): void {
+  try {
+    const orphans = db
+      .prepare(
+        `SELECT e.image_id AS id FROM image_embeddings e
+         LEFT JOIN images i ON i.id = e.image_id WHERE i.id IS NULL`,
+      )
+      .all() as Array<{ id: string }>;
+    if (orphans.length === 0) return;
+    const del = db.prepare('DELETE FROM image_embeddings WHERE image_id = ?');
+    for (const o of orphans) del.run(o.id);
+    console.log(`[schema] removed ${orphans.length} orphaned embedding rows`);
+  } catch (err) {
+    console.warn('[schema] orphaned embedding sweep failed:', err);
+  }
+}
+
 const MIGRATIONS = [
   `ALTER TABLE images ADD COLUMN alt_text TEXT DEFAULT ''`,
+  // Which caption model/prompt generation produced this image's alt/notes/tags.
+  // 1 = LLaVA-era, 2 = Qwen3-VL + enriched design prompt. Rows below the current
+  // version get re-analyzed by the startup migration in ipc-handlers.
+  `ALTER TABLE images ADD COLUMN captions_version INTEGER DEFAULT 1`,
 ];
 
 export function runMigrations(db: Database.Database): void {
@@ -189,6 +215,7 @@ export function runMigrations(db: Database.Database): void {
   ensureImagesHueIndex(db);
   ensureImagesHueBucketIndex(db);
   ensureImagesPhashColumn(db);
+  cleanupOrphanedEmbeddings(db);
 
   for (const migration of MIGRATIONS) {
     try {

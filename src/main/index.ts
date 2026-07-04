@@ -6,6 +6,7 @@ import { initDatabase } from './database/connection';
 import { registerIpcHandlers } from './ipc-handlers';
 import { startOllamaServer, stopOllamaServer } from './ai/ollama-server';
 import { backfillMissingPalettes } from './color-extractor';
+import { upgradeEmbeddingIndexIfNeeded } from './ai/embeddings';
 
 if (started) app.quit();
 
@@ -79,7 +80,7 @@ app.on('ready', async () => {
   });
 
   const db = initDatabase();
-  registerIpcHandlers(db, ipcMain);
+  const ipcHooks = registerIpcHandlers(db, ipcMain);
   buildAppMenu();
   createWindow();
 
@@ -87,6 +88,14 @@ app.on('ready', async () => {
   try {
     await startOllamaServer();
     console.log('[app] Ollama server ready');
+
+    // Re-caption images produced by an older vision model / prompt generation.
+    // Runs through the normal AI queue (progress toast, serial, interruptible) —
+    // captions_version is stamped per image, so a quit mid-run resumes next launch.
+    setTimeout(() => {
+      const queued = ipcHooks.queueCaptionUpgradeIfNeeded();
+      if (queued > 0) console.log(`[captions] queued ${queued} images for caption upgrade`);
+    }, 10000);
   } catch (err) {
     console.error('[app] Failed to start Ollama server:', err);
   }
@@ -101,6 +110,25 @@ app.on('ready', async () => {
       })
       .catch((err) => console.warn('[palettes] backfill failed:', err));
   }, 5000);
+
+  // One-time re-embed when the embedding index format changes (e.g. nomic task prefixes).
+  // Surfaced through the existing indexing toast; retried next launch if interrupted.
+  setTimeout(() => {
+    upgradeEmbeddingIndexIfNeeded(db, (current, total) => {
+      mainWindow?.webContents.send('embedding:progress', {
+        current,
+        total,
+        status:
+          current >= total
+            ? 'Search index upgraded'
+            : `Upgrading search index ${current} of ${total}...`,
+      });
+    })
+      .then((result) => {
+        if (result) console.log(`[embeddings] index upgrade: ${result.reembedded}/${result.total} re-embedded`);
+      })
+      .catch((err) => console.warn('[embeddings] index upgrade failed:', err));
+  }, 8000);
 });
 
 app.on('window-all-closed', () => {

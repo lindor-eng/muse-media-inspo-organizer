@@ -3,7 +3,23 @@ import { analyzeImage, isOllamaRunning } from './ollama-client';
 import { createTagRepo } from '../database/repositories/tags';
 import { createImageRepo } from '../database/repositories/images';
 
-export async function autoTagImage(db: Database.Database, imageId: string): Promise<string[]> {
+/** Bump when the vision model or caption prompt changes — rows below this get re-analyzed on startup. */
+export const CAPTIONS_VERSION = 2;
+
+export interface AutoTagOptions {
+  /**
+   * Refresh mode (model/prompt upgrades): stale auto-tags and the model-written description
+   * are replaced instead of accumulated. Manual tags and user-edited notes are never touched —
+   * we only overwrite notes when they exactly match the previous model's description.
+   */
+  refresh?: boolean;
+}
+
+export async function autoTagImage(
+  db: Database.Database,
+  imageId: string,
+  options?: AutoTagOptions,
+): Promise<string[]> {
   const running = await isOllamaRunning();
   if (!running) {
     console.warn('[auto-tagger] Ollama not running, skipping', imageId);
@@ -31,8 +47,13 @@ export async function autoTagImage(db: Database.Database, imageId: string): Prom
       console.warn('[auto-tagger] empty altText, skipping write for', imageId);
     }
 
-    if (analysis.description && !image.notes) {
+    // Notes have no edit UI — they're always model-written, so refresh can safely replace them.
+    if (analysis.description && (!image.notes || options?.refresh)) {
       imageRepo.update(imageId, { notes: analysis.description });
+    }
+
+    if (options?.refresh) {
+      db.prepare('DELETE FROM image_tags WHERE image_id = ? AND is_auto = 1').run(imageId);
     }
 
     const addedTags: string[] = [];
@@ -42,6 +63,7 @@ export async function autoTagImage(db: Database.Database, imageId: string): Prom
       addedTags.push(tagName);
     }
 
+    imageRepo.setCaptionsVersion(imageId, CAPTIONS_VERSION);
     return addedTags;
   } catch (err) {
     console.error('Auto-tag failed for', imageId, err);

@@ -176,6 +176,8 @@ interface AppState {
   // UI
   theme: 'light' | 'dark';
   isImporting: boolean;
+  /** Whether the "AI moodboard / new folder" modal is open (triggered by the sidebar + button). */
+  moodboardModalOpen: boolean;
   searchQuery: string;
   isSearching: boolean;
   isCmdHeld: boolean;
@@ -229,6 +231,7 @@ interface AppState {
   saveSimilarityPrefsAndRefresh: (prefs: Partial<SimilarityPrefs>) => Promise<void>;
 
   importFiles: (filePaths: string[]) => Promise<void>;
+  setMoodboardModalOpen: (open: boolean) => void;
   createFolder: (name: string, parentId?: string | null) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
   trashImage: (id: string) => Promise<void>;
@@ -255,6 +258,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   counts: { total: 0, uncategorized: 0, untagged: 0, trashed: 0 },
   theme: 'dark',
   isImporting: false,
+  moodboardModalOpen: false,
   detailRefreshNonce: 0,
   searchQuery: '',
   isSearching: false,
@@ -597,6 +601,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isImporting: false });
     await get().refreshAll();
   },
+
+  setMoodboardModalOpen: (open) => set({ moodboardModalOpen: open }),
 
   createFolder: async (name, parentId = null) => {
     await api.createFolder(name, parentId ?? null);
