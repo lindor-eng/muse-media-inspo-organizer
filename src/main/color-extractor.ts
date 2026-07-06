@@ -206,7 +206,10 @@ export async function classifyIndexedChromatic(imagePath: string): Promise<numbe
 
 export async function extractColors(imagePath: string): Promise<ExtractedColor[]> {
   try {
-    const palette = await Vibrant.from(imagePath).getPalette();
+    // node-vibrant can't decode WebP (all Muse thumbnails) — it throws "Unsupported MIME
+    // type" and the palette silently comes back empty. Decode through sharp to PNG first.
+    const pngBuffer = await sharp(imagePath).png().toBuffer();
+    const palette = await Vibrant.from(pngBuffer).getPalette();
     const colors: ExtractedColor[] = [];
 
     const swatches = [

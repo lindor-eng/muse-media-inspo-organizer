@@ -61,8 +61,18 @@ const api = {
   reanalyzeImages: (imageIds: string[]) => ipcRenderer.invoke('ai:reanalyzeImages', imageIds),
   searchByText: (query: string, limit?: number, opts?: { applySimilarityFloor?: boolean }) =>
     ipcRenderer.invoke('ai:searchByText', query, limit, opts),
-  searchForMoodboard: (prompt: string, limit?: number) =>
-    ipcRenderer.invoke('ai:searchForMoodboard', prompt, limit),
+  searchForMoodboard: (prompt: string, limit?: number, opts?: { visionRerank?: boolean }) =>
+    ipcRenderer.invoke('ai:searchForMoodboard', prompt, limit, opts),
+  onMoodboardProgress: (
+    callback: (p: { stage: 'analyzing' | 'searching' | 'verifying'; current?: number; total?: number }) => void,
+  ) => {
+    const handler = (
+      _: unknown,
+      p: { stage: 'analyzing' | 'searching' | 'verifying'; current?: number; total?: number },
+    ) => callback(p);
+    ipcRenderer.on('moodboard:progress', handler);
+    return () => { ipcRenderer.removeListener('moodboard:progress', handler); };
+  },
   getSimilarImages: (imageId: string, opts?: { refineModes?: SimilarRefineMode[] }) =>
     ipcRenderer.invoke('ai:findSimilar', imageId, opts ?? {}),
 

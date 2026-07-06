@@ -50,6 +50,23 @@ export function extractColorIntent(prompt: string): PromptColorIntent {
   return { targets, wantsMonochrome };
 }
 
+/**
+ * Build a color intent from LLM-parsed brief colors (see parseMoodboardIntent). Handles
+ * vocabulary the regex lexicon can't ("pastel", "jewel tones", "dusty pink") because the
+ * model supplies the representative hex itself.
+ */
+export function colorIntentFromParsed(
+  colors: Array<{ name: string; hex: string }>,
+  monochrome: boolean,
+): PromptColorIntent {
+  const targets: PromptColorIntent['targets'] = [];
+  for (const c of colors) {
+    const rgb = hexToRgb(c.hex);
+    if (rgb) targets.push({ name: c.name, rgb });
+  }
+  return { targets, wantsMonochrome: monochrome };
+}
+
 function hexToRgb(hexRaw: string): { r: number; g: number; b: number } | null {
   const cleaned = hexRaw.trim().replace(/^#/, '').replace(/^0x/i, '');
   if (cleaned.length !== 6) return null;

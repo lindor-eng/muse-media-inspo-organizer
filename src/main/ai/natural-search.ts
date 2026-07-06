@@ -1,8 +1,14 @@
 import type Database from 'better-sqlite3';
 import { createImageRepo, type ImageRecord as DbImageRecord } from '../database/repositories/images';
 import { blobToFloat32Vector, ensureImageEmbedding, embedAndStoreForImage, l2Normalize } from './embeddings';
-import { embedQuery, generateHypotheticalCaptions, isOllamaRunning } from './ollama-client';
-import { extractColorIntent, paletteIntentScore } from './prompt-color';
+import {
+  embedQuery,
+  generateHypotheticalCaptions,
+  isOllamaRunning,
+  parseMoodboardIntent,
+  scoreImageFit,
+} from './ollama-client';
+import { colorIntentFromParsed, extractColorIntent, paletteIntentScore } from './prompt-color';
 import { phashSimilarity, phashHamming, blobToPhash, computePHash, phashToBlob } from './phash';
 import { likenessDisplayPercentRounded } from '../../shared/visual-similarity';
 import { dominantHueAxisMultiplier, dualDominantHueBoost, hueBinRingSteps } from '../../shared/image-color-index';
@@ -311,28 +317,139 @@ const MOODBOARD_COLOR_WEIGHT = 0.16;
     otherwise drag the relative floor up and cut marginal-but-on-theme matches. */
 const MOODBOARD_RELATIVE_WINDOW = 0.12;
 
+export interface MoodboardSearchOptions {
+  /** High-accuracy mode: vision model visually verifies borderline candidates (~3-5s each). */
+  visionRerank?: boolean;
+  /** Progress callback for the long-running vision pass. */
+  onProgress?: (p: { stage: 'analyzing' | 'searching' | 'verifying'; current?: number; total?: number }) => void;
+}
+
+/** Vision rerank keeps: score ≥ this stays on the board. */
+const VISION_KEEP_SCORE = 5;
+/** Cap on vision calls per moodboard — bounds worst-case latency to ~1-2 min. */
+const VISION_MAX_CALLS = 20;
+/** Fraction of the final board (from the bottom) treated as the uncertainty band. */
+const VISION_BAND_FRACTION = 0.5;
+
 /**
  * Prompt→library search tuned for moodboard curation:
- *  1. Embed the prompt directly.
- *  2. HyDE expansion — generate hypothetical alt-text captions for images that would fit
- *     the brief and embed those too (library vectors are built from caption text, so this
- *     matches their register). All embeddings use the query prefix so cosines stay in one
- *     comparable space and the calibrated floor still applies.
- *  3. Union the KNN pools, score semantic = blend(direct, best caption), floor the weak tail.
- *  4. When the prompt names colors (or B&W), re-rank survivors by actual palette agreement.
+ *  1. Parse the brief into intent (facets / exclusions / colors) via structured LLM output;
+ *     fall back to whole-brief + regex color detection when parsing fails.
+ *  2. Per facet: embed directly + HyDE captions, union KNN pools, blend cosines.
+ *     Multi-facet briefs interleave facets round-robin so each theme gets board share.
+ *  3. Floor the weak tail (calibrated absolute + relative floor, per facet).
+ *  4. Exclusion keyword filter against captions/tags, then color re-rank vs stored palettes.
+ *  5. Set selection: pHash dedupe + MMR cohesion + outlier pruning (selectBoardSet).
+ *  6. Optional vision rerank: the model looks at borderline thumbnails and drops misfits.
  */
 export async function searchForMoodboard(
   db: Database.Database,
   prompt: string,
   limit = 24,
+  options?: MoodboardSearchOptions,
 ): Promise<SimilarResult[]> {
   if (!(await isOllamaRunning())) return [];
+  const onProgress = options?.onProgress ?? (() => {});
 
-  const directRaw = await embedQuery(prompt);
+  onProgress({ stage: 'analyzing' });
+  const intent = await parseMoodboardIntent(prompt);
+
+  // Guard against intent hallucination: facet-splitting is only trustworthy when the brief
+  // actually enumerates multiple themes; exclusions only when it actually negates something.
+  // A hallucinated facet split dilutes retrieval; hallucinated exclusions can gut the board.
+  const briefEnumerates = /(\band\b|\bor\b|,|\+|\/)/i.test(prompt);
+  const briefNegates = /\b(no|not|without|avoid|except|exclude|excluding)\b/i.test(prompt);
+  const facets = intent?.facets?.length && briefEnumerates ? intent.facets : [prompt];
+  const exclusions = briefNegates ? intent?.exclusions ?? [] : [];
+
+  onProgress({ stage: 'searching' });
+  const perFacetLimit = facets.length > 1 ? Math.ceil((limit * 1.5) / facets.length) : limit;
+  const facetResults: BoardCandidate[][] = [];
+  for (const facet of facets) {
+    facetResults.push(await searchFacet(db, facet, perFacetLimit));
+  }
+
+  // Round-robin interleave so "brutalist posters AND landscape photography" fills the board
+  // with both themes instead of whichever facet scores higher cosines.
+  const seen = new Set<string>();
+  let survivors: BoardCandidate[] = [];
+  for (let i = 0; ; i++) {
+    let any = false;
+    for (const list of facetResults) {
+      if (i < list.length) {
+        any = true;
+        if (!seen.has(list[i].image_id)) {
+          seen.add(list[i].image_id);
+          survivors.push(list[i]);
+        }
+      }
+    }
+    if (!any) break;
+  }
+  if (survivors.length === 0) return [];
+
+  // Lexical exclusion filter: cheap first line of defense; the vision pass catches the rest.
+  // Matches alt text + tags only — the verbose notes mention nearly everything ("text",
+  // "screenshot"…) and would wipe out whole boards on incidental vocabulary.
+  if (exclusions.length > 0) {
+    const textStmt = db.prepare(`
+      SELECT i.alt_text || ' ' ||
+        COALESCE((SELECT group_concat(t.name, ' ') FROM tags t
+                  JOIN image_tags it ON it.tag_id = t.id WHERE it.image_id = i.id), '') AS txt
+      FROM images i WHERE i.id = ?
+    `);
+    survivors = survivors.filter((c) => {
+      const row = textStmt.get(c.image_id) as { txt: string } | undefined;
+      if (!row?.txt) return true;
+      const txt = row.txt.toLowerCase();
+      return !exclusions.some((ex) => new RegExp(`\\b${ex.replace(/[^\w\s-]/g, '')}`, 'i').test(txt));
+    });
+  }
+
+  // Color re-rank vs stored palettes. LLM-parsed colors handle "pastel"/"dusty pink"/etc.;
+  // regex lexicon remains the fallback when intent parsing failed.
+  const colorIntent = intent
+    ? colorIntentFromParsed(intent.colors, intent.monochrome)
+    : extractColorIntent(prompt);
+  if (colorIntent.wantsMonochrome || colorIntent.targets.length > 0) {
+    const paletteStmt = db.prepare(
+      'SELECT hex_color, percentage FROM image_colors WHERE image_id = ? ORDER BY sort_order LIMIT 14',
+    );
+    survivors = survivors
+      .map((c) => {
+        const palette = paletteStmt.all(c.image_id) as Array<{ hex_color: string; percentage: number }>;
+        const colorScore = paletteIntentScore(colorIntent, palette);
+        const adjust = colorScore == null ? 0 : MOODBOARD_COLOR_WEIGHT * (colorScore - 0.5);
+        return { ...c, semantic: c.semantic + adjust };
+      })
+      .sort((a, b) => b.semantic - a.semantic);
+  } else if (facets.length === 1) {
+    survivors.sort((a, b) => b.semantic - a.semantic);
+  }
+  // Multi-facet without color intent keeps the interleaved order (board share per theme).
+
+  let board = selectBoardSet(db, survivors, limit);
+
+  // Vision rerank: eyeball the uncertainty band (weakest semantic scores on the board),
+  // drop misfits, backfill from unpicked survivors — all within a hard call budget.
+  if (options?.visionRerank && board.length > 0) {
+    board = await visionRerankBoard(db, board, survivors, prompt, exclusions, limit, onProgress);
+  }
+
+  return board.map((c) => ({ image_id: c.image_id, distance: 1 - c.semantic }));
+}
+
+/** Single-facet retrieval: direct + HyDE embeddings → union KNN → blended cosine → floor. */
+async function searchFacet(
+  db: Database.Database,
+  facet: string,
+  limit: number,
+): Promise<BoardCandidate[]> {
+  const directRaw = await embedQuery(facet);
   if (!directRaw?.length) return [];
   const direct = Float32Array.from(l2Normalize(directRaw));
 
-  const captions = await generateHypotheticalCaptions(prompt, 3);
+  const captions = await generateHypotheticalCaptions(facet, 3);
   const capVecs: Float32Array[] = [];
   for (const cap of captions) {
     const v = await embedQuery(cap);
@@ -349,9 +466,9 @@ export async function searchForMoodboard(
   if (pool.size === 0) return [];
 
   // Exact cosines for every union member against every query vector, from stored blobs.
+  // Doc vectors are retained on the candidate for the set-selection cohesion pass.
   const embStmt = db.prepare('SELECT embedding FROM image_embeddings WHERE image_id = ?');
-  type Cand = { image_id: string; semantic: number };
-  const cands: Cand[] = [];
+  const cands: BoardCandidate[] = [];
   for (const id of pool) {
     const row = embStmt.get(id) as { embedding: Buffer } | undefined;
     if (!row) continue;
@@ -367,31 +484,192 @@ export async function searchForMoodboard(
       capVecs.length > 0 && bestCap > -1
         ? MOODBOARD_W_DIRECT * directCos + MOODBOARD_W_HYDE * bestCap
         : directCos;
-    cands.push({ image_id: id, semantic });
+    cands.push({ image_id: id, semantic, vec: docVec });
   }
   if (cands.length === 0) return [];
 
   cands.sort((a, b) => b.semantic - a.semantic);
   const floor = Math.max(TEXT_SEARCH_ABS_MIN_COSINE, cands[0].semantic - MOODBOARD_RELATIVE_WINDOW);
-  let survivors = cands.filter((c) => c.semantic >= floor);
+  return cands.filter((c) => c.semantic >= floor);
+}
 
-  // Color-aware re-rank: only reorders images that already passed the semantic floor.
-  const intent = extractColorIntent(prompt);
-  if (intent.wantsMonochrome || intent.targets.length > 0) {
-    const paletteStmt = db.prepare(
-      'SELECT hex_color, percentage FROM image_colors WHERE image_id = ? ORDER BY sort_order LIMIT 14',
-    );
-    survivors = survivors
-      .map((c) => {
-        const palette = paletteStmt.all(c.image_id) as Array<{ hex_color: string; percentage: number }>;
-        const colorScore = paletteIntentScore(intent, palette);
-        const adjust = colorScore == null ? 0 : MOODBOARD_COLOR_WEIGHT * (colorScore - 0.5);
-        return { ...c, semantic: c.semantic + adjust };
-      })
-      .sort((a, b) => b.semantic - a.semantic);
+/**
+ * Visually verify the board's uncertainty band: the top of the board is trusted, the
+ * weakest-scoring picks get shown to the vision model. Failures are replaced from the
+ * unpicked survivor pool (each replacement verified too). Fail-open — a scoring error
+ * keeps the image rather than shrinking the board on infrastructure hiccups.
+ */
+async function visionRerankBoard(
+  db: Database.Database,
+  board: BoardCandidate[],
+  survivors: BoardCandidate[],
+  prompt: string,
+  exclusions: string[],
+  limit: number,
+  onProgress: NonNullable<MoodboardSearchOptions['onProgress']>,
+): Promise<BoardCandidate[]> {
+  const pathStmt = db.prepare('SELECT thumbnail_path, original_path FROM images WHERE id = ?');
+  const imagePathOf = (id: string): string | null => {
+    const row = pathStmt.get(id) as { thumbnail_path: string | null; original_path: string } | undefined;
+    return row ? row.thumbnail_path || row.original_path : null;
+  };
+
+  const byScore = [...board].sort((a, b) => b.semantic - a.semantic);
+  const bandSize = Math.min(Math.ceil(board.length * VISION_BAND_FRACTION), VISION_MAX_CALLS);
+  const trusted = byScore.slice(0, board.length - bandSize);
+  const band = byScore.slice(board.length - bandSize);
+
+  const onBoard = new Set(board.map((c) => c.image_id));
+  const backfillQueue = survivors.filter((c) => !onBoard.has(c.image_id));
+
+  const kept: BoardCandidate[] = [...trusted];
+  let calls = 0;
+  const total = band.length;
+  let done = 0;
+
+  const verify = async (cand: BoardCandidate): Promise<boolean> => {
+    const p = imagePathOf(cand.image_id);
+    if (!p) return false;
+    calls++;
+    const score = await scoreImageFit(p, prompt, exclusions);
+    return score === null || score >= VISION_KEEP_SCORE;
+  };
+
+  for (const cand of band) {
+    onProgress({ stage: 'verifying', current: ++done, total });
+    if (calls >= VISION_MAX_CALLS) {
+      kept.push(cand); // budget exhausted — keep unverified rather than shrink the board
+      continue;
+    }
+    if (await verify(cand)) {
+      kept.push(cand);
+      continue;
+    }
+    // Dropped — try to backfill with the next unpicked survivor that passes.
+    while (calls < VISION_MAX_CALLS && backfillQueue.length > 0 && kept.length < limit) {
+      const next = backfillQueue.shift()!;
+      if (await verify(next)) {
+        kept.push(next);
+        break;
+      }
+    }
   }
 
-  return survivors.slice(0, limit).map((c) => ({ image_id: c.image_id, distance: 1 - c.semantic }));
+  return kept.slice(0, limit);
+}
+
+interface BoardCandidate {
+  image_id: string;
+  semantic: number;
+  /** Stored caption embedding (unit-norm) — reused for candidate↔candidate cohesion. */
+  vec: Float32Array;
+}
+
+/** pHash Hamming distance at or below this = same shot for board purposes (near-duplicate). */
+const DEDUPE_MAX_HAMMING = 6;
+/** Board selection = relevance-heavy MMR: score + λ·cohesion-with-picked-so-far. */
+const COHESION_LAMBDA = 0.3;
+/** Seed the board with the top matches before cohesion starts steering picks. */
+const SEED_COUNT = 3;
+/** An image whose best affinity to the seeds is this far below the pool's median doesn't
+    belong to the theme — prune it even though it passed the semantic floor. */
+const OUTLIER_AFFINITY_GAP = 0.12;
+
+/**
+ * Pick the final board as a SET instead of the top-N independent matches:
+ *  1. Near-duplicate dedupe — cluster by pHash Hamming distance, keep the best-scoring
+ *     representative so five takes of one shot don't fill five slots.
+ *  2. Greedy MMR-style growth — seed with the strongest matches, then repeatedly add the
+ *     candidate with the best (semantic score + cohesion with the board so far), where
+ *     cohesion blends caption-embedding cosine with pHash visual similarity.
+ *  3. Outlier pruning — candidates whose affinity to the seed theme falls far below the
+ *     pool median get dropped: they matched the words but not the board.
+ * Pure in-memory math over stored vectors/hashes — no model calls, O(n²) on ≤~200 rows.
+ */
+function selectBoardSet(
+  db: Database.Database,
+  survivors: BoardCandidate[],
+  limit: number,
+): BoardCandidate[] {
+  if (survivors.length <= 1) return survivors.slice(0, limit);
+
+  const phashStmt = db.prepare('SELECT phash FROM images WHERE id = ?');
+  const hashes = new Map<string, bigint | null>();
+  for (const c of survivors) {
+    const row = phashStmt.get(c.image_id) as { phash: Buffer | null } | undefined;
+    hashes.set(c.image_id, row?.phash ? blobToPhash(Buffer.from(row.phash)) : null);
+  }
+
+  const boardPaletteStmt = db.prepare(
+    'SELECT hex_color, percentage FROM image_colors WHERE image_id = ? ORDER BY sort_order LIMIT 14',
+  );
+  const palettes = new Map<string, PaletteRow[]>();
+  for (const c of survivors) {
+    palettes.set(c.image_id, boardPaletteStmt.all(c.image_id) as PaletteRow[]);
+  }
+
+  // 1. Dedupe near-identical shots. Survivors are score-ordered, so the first member of
+  // each cluster is its best representative.
+  const deduped: BoardCandidate[] = [];
+  for (const c of survivors) {
+    const h = hashes.get(c.image_id) ?? null;
+    const dup =
+      h !== null &&
+      deduped.some((kept) => {
+        const kh = hashes.get(kept.image_id) ?? null;
+        return kh !== null && phashHamming(h, kh) <= DEDUPE_MAX_HAMMING;
+      });
+    if (!dup) deduped.push(c);
+  }
+  if (deduped.length <= SEED_COUNT) return deduped.slice(0, limit);
+
+  // Pairwise affinity: semantic (do the captions describe the same world?), palette (do
+  // they share a color story? — the signal humans judge board coherence by first), and a
+  // small pHash nudge (near-identical layout). Missing signals fall back to semantic so a
+  // palette-less pair degrades to the old 80/20 blend instead of being penalized.
+  const affinity = (a: BoardCandidate, b: BoardCandidate): number => {
+    const sem = normCosine(dotNormalized(a.vec, b.vec));
+    const ha = hashes.get(a.image_id) ?? null;
+    const hb = hashes.get(b.image_id) ?? null;
+    const vis = ha !== null && hb !== null ? phashSimilarity(phashHamming(ha, hb)) : sem;
+    const pal = symmetricPaletteOverlap(palettes.get(a.image_id) ?? [], palettes.get(b.image_id) ?? []);
+    return 0.6 * sem + 0.2 * (pal ?? sem) + 0.2 * vis;
+  };
+
+  // 2. Greedy growth from the strongest seeds.
+  const picked = deduped.slice(0, SEED_COUNT);
+  const rest = deduped.slice(SEED_COUNT);
+
+  // 3. Theme gate, relative to the pool itself: how well does each remaining candidate
+  // attach to the seeds, compared to what's typical for this prompt?
+  const seedAffinity = new Map<string, number>();
+  for (const c of rest) {
+    seedAffinity.set(c.image_id, Math.max(...picked.map((p) => affinity(c, p))));
+  }
+  const sortedAff = [...seedAffinity.values()].sort((a, b) => a - b);
+  const medianAff = sortedAff[Math.floor(sortedAff.length / 2)] ?? 0;
+  const themeGate = medianAff - OUTLIER_AFFINITY_GAP;
+
+  const remaining = rest.filter((c) => (seedAffinity.get(c.image_id) ?? 0) >= themeGate);
+
+  while (picked.length < limit && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const c = remaining[i];
+      let coh = 0;
+      for (const p of picked) coh += affinity(c, p);
+      coh /= picked.length;
+      const score = c.semantic + COHESION_LAMBDA * coh;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    picked.push(remaining.splice(bestIdx, 1)[0]);
+  }
+
+  return picked;
 }
 
 /**

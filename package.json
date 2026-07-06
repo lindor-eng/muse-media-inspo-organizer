@@ -1,7 +1,7 @@
 {
   "name": "Muse",
   "productName": "Muse",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local design file organizer with AI-powered tagging and search - Muse",
   "main": ".vite/build/index.js",
   "private": true,

@@ -7,7 +7,7 @@ type Mode = 'ai' | 'empty';
 
 type Stage =
   | { kind: 'form' }
-  | { kind: 'searching' }
+  | { kind: 'searching'; detail?: string }
   | { kind: 'creating'; total: number }
   | { kind: 'done'; folderId: string; folderName: string; imageCount: number; requestedCount?: number }
   | { kind: 'error'; message: string };
@@ -26,9 +26,10 @@ export function MoodboardDialog() {
   const [prompt, setPrompt] = useState('');
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [folderName, setFolderName] = useState('');
+  const [highAccuracy, setHighAccuracy] = useState(false);
   const [stage, setStage] = useState<Stage>({ kind: 'form' });
 
-  // Reset when the modal opens/closes.
+  // Reset when the modal opens/closes. High-accuracy preference intentionally persists.
   useEffect(() => {
     if (open) {
       setMode('ai');
@@ -37,6 +38,20 @@ export function MoodboardDialog() {
       setFolderName('');
       setStage({ kind: 'form' });
     }
+  }, [open]);
+
+  // Live stage detail from the main process while a moodboard search runs.
+  useEffect(() => {
+    if (!open) return;
+    return window.electronAPI.onMoodboardProgress((p) => {
+      const detail =
+        p.stage === 'analyzing'
+          ? 'Understanding your prompt…'
+          : p.stage === 'verifying'
+            ? `Visually checking matches… ${p.current ?? 0}/${p.total ?? 0}`
+            : 'Scanning your library for the best matches…';
+      setStage((s) => (s.kind === 'searching' ? { kind: 'searching', detail } : s));
+    });
   }, [open]);
 
   // Escape closes the modal from any stage other than an active search/create.
@@ -82,7 +97,7 @@ export function MoodboardDialog() {
     if (!trimmedPrompt) return;
     setStage({ kind: 'searching' });
     try {
-      const results = (await api.searchForMoodboard(trimmedPrompt, count)) as
+      const results = (await api.searchForMoodboard(trimmedPrompt, count, { visionRerank: highAccuracy })) as
         | { image_id: string; distance: number }[]
         | undefined;
       const ids = results?.map((r) => r.image_id) ?? [];
@@ -188,6 +203,24 @@ export function MoodboardDialog() {
                   </span>
                 </label>
 
+                <label className="flex items-start gap-2.5 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={highAccuracy}
+                    onChange={(e) => setHighAccuracy(e.target.checked)}
+                    className="mt-0.5 accent-blue-500"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-xs font-medium text-gray-300 group-hover:text-gray-100">
+                      High accuracy
+                    </span>
+                    <span className="block text-[11px] text-gray-500">
+                      AI visually double-checks borderline matches before adding them. Slower (up to a minute or
+                      two) but noticeably more on-theme.
+                    </span>
+                  </span>
+                </label>
+
                 <div className="flex items-end gap-3">
                   <label className="block flex-1">
                     <span className="text-xs font-medium text-gray-400">Number of images</span>
@@ -260,7 +293,7 @@ export function MoodboardDialog() {
             <Loader2 size={16} className="animate-spin text-blue-400 shrink-0" />
             <span>
               {stage.kind === 'searching'
-                ? 'Scanning your library for the best matches…'
+                ? stage.detail ?? 'Scanning your library for the best matches…'
                 : stage.total > 0
                   ? `Adding ${stage.total} image${stage.total === 1 ? '' : 's'} to the board…`
                   : 'Creating board…'}

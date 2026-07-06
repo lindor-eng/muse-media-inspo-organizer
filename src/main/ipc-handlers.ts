@@ -238,11 +238,19 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
     return searchByText(db, query, clamped, { applySimilarityFloor });
   });
 
-  ipcMain.handle('ai:searchForMoodboard', async (_, prompt: string, limit?: number) => {
+  ipcMain.handle('ai:searchForMoodboard', async (event, prompt: string, limit?: number, opts?: unknown) => {
     const clamped = typeof limit === 'number' && Number.isFinite(limit)
       ? Math.max(1, Math.min(500, Math.floor(limit)))
       : undefined;
-    return searchForMoodboard(db, prompt, clamped);
+    const visionRerank = Boolean(
+      opts && typeof opts === 'object' && (opts as { visionRerank?: unknown }).visionRerank,
+    );
+    return searchForMoodboard(db, prompt, clamped, {
+      visionRerank,
+      onProgress: (p) => {
+        if (!event.sender.isDestroyed()) event.sender.send('moodboard:progress', p);
+      },
+    });
   });
 
   ipcMain.handle('ai:findSimilar', async (_, imageId: string, opts?: unknown) => {
