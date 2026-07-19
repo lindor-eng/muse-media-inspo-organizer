@@ -122,9 +122,12 @@ export function createImageRepo(db: Database.Database) {
 
       const countResult = db.prepare(`SELECT COUNT(*) as total FROM images i ${where}`).get(...params) as { total: number };
 
+      // limit <= 0 means "return everything" (the grid renders the whole view with no
+      // pagination). We still pass a LIMIT so OFFSET keeps working for any future paged caller.
+      const unbounded = !Number.isFinite(limit) || limit <= 0;
       const images = db.prepare(
         `SELECT i.* FROM images i ${where} ORDER BY i.imported_at DESC LIMIT ? OFFSET ?`
-      ).all(...params, limit, offset) as ImageRecord[];
+      ).all(...params, unbounded ? -1 : limit, offset) as ImageRecord[];
 
       return { images, total: countResult.total };
     },

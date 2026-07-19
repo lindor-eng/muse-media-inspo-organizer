@@ -13,6 +13,8 @@ export interface ImportResult {
   success: boolean;
   error?: string;
   duplicate?: boolean;
+  /** Set when a re-imported file matched a row that was in the Trash and got restored. */
+  restored?: boolean;
 }
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -86,6 +88,21 @@ async function persistImage(
   const existing = imageRepo.getByHash(hash);
 
   if (existing) {
+    // A live duplicate is a genuine no-op. But if the match is sitting in the Trash,
+    // re-importing the same file is the user's clear intent to bring it back — restore it
+    // (and re-home it to the drop target if one was given) so it reappears in "All" instead
+    // of staying invisibly trashed. Without this, a trashed image can never be re-added.
+    if (existing.is_trashed) {
+      imageRepo.restore(existing.id);
+      if (folderId) imageRepo.update(existing.id, { folder_id: folderId });
+      return {
+        id: existing.id,
+        filename: displayFilename,
+        thumbnail_path: existing.thumbnail_path ?? '',
+        success: true,
+        restored: true,
+      };
+    }
     return { id: existing.id, filename: displayFilename, thumbnail_path: '', success: false, duplicate: true };
   }
 

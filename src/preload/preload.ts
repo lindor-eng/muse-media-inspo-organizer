@@ -59,6 +59,8 @@ const api = {
 
   // AI
   reanalyzeImages: (imageIds: string[]) => ipcRenderer.invoke('ai:reanalyzeImages', imageIds),
+  getAnalyzableCount: () => ipcRenderer.invoke('ai:analyzableCount') as Promise<number>,
+  reanalyzeAll: () => ipcRenderer.invoke('ai:reanalyzeAll') as Promise<{ queued: number }>,
   searchByText: (query: string, limit?: number, opts?: { applySimilarityFloor?: boolean }) =>
     ipcRenderer.invoke('ai:searchByText', query, limit, opts),
   searchForMoodboard: (prompt: string, limit?: number, opts?: { visionRerank?: boolean }) =>
@@ -127,7 +129,10 @@ const api = {
   getFileUrl: (filePath: string) => `local-file://${filePath}`,
 
   // Native menu events ("File → …") forwarded from the main process to the renderer.
-  onMenuEvent: (channel: 'menu:importFiles' | 'menu:exportLibrary' | 'menu:importLibrary', callback: () => void) => {
+  onMenuEvent: (
+    channel: 'menu:importFiles' | 'menu:exportLibrary' | 'menu:importLibrary' | 'menu:updateModel',
+    callback: () => void,
+  ) => {
     const handler = () => callback();
     ipcRenderer.on(channel, handler);
     return () => { ipcRenderer.removeListener(channel, handler); };

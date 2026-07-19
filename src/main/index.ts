@@ -64,6 +64,8 @@ function buildAppMenu(): void {
         { type: 'separator' },
         { label: 'Export Library…', click: sendToRenderer('menu:exportLibrary') },
         { label: 'Import Library…', click: sendToRenderer('menu:importLibrary') },
+        { type: 'separator' },
+        { label: 'Update AI Model…', click: sendToRenderer('menu:updateModel') },
       ],
     },
     { role: 'editMenu' },

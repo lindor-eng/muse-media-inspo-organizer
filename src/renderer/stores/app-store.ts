@@ -435,7 +435,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         break;
     }
 
-    const result = await api.queryImages(filter, 200, 0);
+    // limit 0 = "all rows for this view". The grid renders the entire result set (no
+    // pagination); off-screen work is skipped via content-visibility on each card, so a
+    // large DOM stays cheap. Previously this was hard-capped at 200, silently hiding every
+    // image past the 200 most-recently-imported in any view — most visibly in "All".
+    const result = await api.queryImages(filter, 0, 0);
     set({ images: result.images, totalImages: result.total });
   },
 

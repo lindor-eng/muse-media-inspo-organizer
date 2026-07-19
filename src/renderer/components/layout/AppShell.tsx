@@ -5,6 +5,7 @@ import { DetailPanel } from '../detail/DetailPanel';
 import { ImageFocus } from '../grid/ImageFocus';
 import { LibraryExport } from './LibraryExport';
 import { LibraryImportDialog } from './LibraryImportDialog';
+import { ModelUpdateDialog } from './ModelUpdateDialog';
 import { MoodboardDialog } from './MoodboardDialog';
 import { useAppStore } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
@@ -181,6 +182,7 @@ export function AppShell() {
       <DetailPanel />
       <LibraryExport />
       <LibraryImportDialog />
+      <ModelUpdateDialog />
       <MoodboardDialog />
       {isDragging && (
         <div className="fixed inset-0 bg-blue-500/10 border-2 border-dashed border-blue-500 z-50 flex items-center justify-center pointer-events-none">

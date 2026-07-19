@@ -1,4 +1,5 @@
-import { useRef, useState, useEffect } from 'react';
+import { memo, useRef, useState, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { FolderOpen, Tag, Trash2, Plus, RotateCcw, Sparkles } from 'lucide-react';
 import { useAppStore, type ImageRecord } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
@@ -7,18 +8,43 @@ interface Props {
   image: ImageRecord;
 }
 
-export function ImageCard({ image }: Props) {
+function ImageCardImpl({ image }: Props) {
+  // Narrow, per-card subscription: selection is expressed as derived primitives so flipping
+  // focus/selection re-renders only the affected cards, not the whole grid. Action functions
+  // have stable identities in zustand, so selecting them never triggers a re-render. This
+  // matters at scale — the grid now renders every image in the view, so a card that woke up
+  // on every unrelated store change (search keystrokes, import toggles, similar-image fetches)
+  // would make a large library crawl.
   const {
-    selectedImageId, setSelectedImage, toggleImageSelection, selectedImageIds, isCmdHeld,
-    setDraggingImage, folders, tags, trashImage, deleteImage, refreshAll, loadTags,
-    bulkTrashImages, bulkDeleteImages, bulkRestoreImages, bulkMoveToFolder, bulkAddTag,
-    gridThumbHeight,
-  } = useAppStore();
+    isFocused, isBulkSelected, hasBulkSelection, isCmdHeld, folders, tags, gridThumbHeight,
+    setSelectedImage, toggleImageSelection, setDraggingImage, trashImage, deleteImage,
+    refreshAll, loadTags, bulkTrashImages, bulkDeleteImages, bulkRestoreImages,
+    bulkMoveToFolder, bulkAddTag,
+  } = useAppStore(
+    useShallow((s) => ({
+      isFocused: s.selectedImageId === image.id,
+      isBulkSelected: s.selectedImageIds.has(image.id),
+      hasBulkSelection: s.selectedImageIds.size > 0,
+      isCmdHeld: s.isCmdHeld,
+      folders: s.folders,
+      tags: s.tags,
+      gridThumbHeight: s.gridThumbHeight,
+      setSelectedImage: s.setSelectedImage,
+      toggleImageSelection: s.toggleImageSelection,
+      setDraggingImage: s.setDraggingImage,
+      trashImage: s.trashImage,
+      deleteImage: s.deleteImage,
+      refreshAll: s.refreshAll,
+      loadTags: s.loadTags,
+      bulkTrashImages: s.bulkTrashImages,
+      bulkDeleteImages: s.bulkDeleteImages,
+      bulkRestoreImages: s.bulkRestoreImages,
+      bulkMoveToFolder: s.bulkMoveToFolder,
+      bulkAddTag: s.bulkAddTag,
+    })),
+  );
   const cardRef = useRef<HTMLDivElement>(null);
-  const isFocused = selectedImageId === image.id;
-  const isBulkSelected = selectedImageIds.has(image.id);
   const isSelected = isFocused || isBulkSelected;
-  const hasBulkSelection = selectedImageIds.size > 0;
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [subMenu, setSubMenu] = useState<'tags' | 'folders' | null>(null);
@@ -30,9 +56,12 @@ export function ImageCard({ image }: Props) {
     ? `local-file://${image.thumbnail_path}`
     : `local-file://${image.original_path}`;
 
-  // If this image is part of a bulk selection, actions apply to all selected
-  const targetIds = hasBulkSelection && isBulkSelected
-    ? Array.from(selectedImageIds)
+  // If this image is part of a bulk selection, actions apply to all selected. The full Set is
+  // read non-reactively (getState) so this card doesn't re-render whenever another card's
+  // selection toggles — hasBulkSelection/isBulkSelected in the slice above already tell it
+  // whether it participates, which is all it needs to decide between "all selected" and "just me".
+  const targetIds: string[] = hasBulkSelection && isBulkSelected
+    ? Array.from(useAppStore.getState().selectedImageIds)
     : [image.id];
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -143,6 +172,13 @@ export function ImageCard({ image }: Props) {
   const selectionCount = targetIds.length;
   const showBulkLabel = selectionCount > 1;
 
+  // Estimated rendered width from the image's real aspect ratio (square fallback when the DB
+  // has no dimensions). Feeds contain-intrinsic-size so off-screen cards reserve the correct
+  // footprint — the browser can skip their layout/paint (content-visibility) with zero scroll
+  // jump when they come into view.
+  const aspect = image.width && image.height ? image.width / image.height : 1;
+  const intrinsicWidth = Math.round(gridThumbHeight * aspect);
+
   return (
     <>
       <div
@@ -154,7 +190,11 @@ export function ImageCard({ image }: Props) {
         onContextMenu={handleContextMenu}
         className={`cursor-pointer rounded-lg overflow-hidden border-2 relative
           ${isBulkSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : isSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : 'border-transparent hover:border-gray-700'}`}
-        style={{ height: gridThumbHeight }}
+        style={{
+          height: gridThumbHeight,
+          contentVisibility: 'auto',
+          containIntrinsicSize: `${gridThumbHeight}px ${intrinsicWidth}px`,
+        }}
         onClick={handleClick}
       >
         <img
@@ -301,3 +341,11 @@ export function ImageCard({ image }: Props) {
     </>
   );
 }
+
+// Memoized so that when ContentGrid re-renders without a new images array (its own state or
+// props changing), the whole card list is skipped by referential equality on `image`. Combined
+// with the narrow useShallow slice above — which stops unrelated store changes (search input,
+// cmd-held, another card's selection) from waking this card at all — this keeps a fully-rendered
+// large view responsive. (A genuine data refresh does hand every card a fresh object and re-renders;
+// that's the intended path for reflecting edits.)
+export const ImageCard = memo(ImageCardImpl);

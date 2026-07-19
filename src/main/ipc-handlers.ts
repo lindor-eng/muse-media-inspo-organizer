@@ -29,6 +29,12 @@ export interface IpcHooks {
   queueCaptionUpgradeIfNeeded: () => number;
 }
 
+/** Non-trashed image count — used to size the "Update AI Model" re-analyze prompt. */
+function countAnalyzableImages(db: Database.Database): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM images WHERE is_trashed = 0').get() as { n: number };
+  return row.n;
+}
+
 export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): IpcHooks {
   const folderRepo = createFolderRepo(db);
   const imageRepo = createImageRepo(db);
@@ -150,8 +156,12 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
   }
 
   async function enrichImportResults(results: ImportResult[]): Promise<void> {
-    for (const result of results) {
-      if (result.success && result.thumbnail_path) {
+    // Restored trash rows already have colors/captions/embeddings from their first import —
+    // re-enriching them just burns a vision pass, so treat only genuinely-new images as fresh.
+    const fresh = results.filter((r) => r.success && !r.restored);
+
+    for (const result of fresh) {
+      if (result.thumbnail_path) {
         try {
           await extractAndStoreColors(db, result.id, result.thumbnail_path);
         } catch {
@@ -160,7 +170,7 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
       }
     }
 
-    const successfulIds = results.filter((r) => r.success).map((r) => r.id);
+    const successfulIds = fresh.map((r) => r.id);
     if (successfulIds.length === 0) return;
 
     aiQueue.push(...successfulIds);
@@ -226,6 +236,28 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
     }
 
     return { processed: imageIds.length, total: imageIds.length };
+  });
+
+  // Count of images a full re-analysis would touch — the "Update AI Model" dialog shows
+  // this before the user confirms the (potentially long) run.
+  ipcMain.handle('ai:analyzableCount', () => countAnalyzableImages(db));
+
+  // Re-analyze the ENTIRE non-trashed library with the current vision model/prompt.
+  // Fire-and-forget: pushes every image into the shared AI queue as a refresh (stale
+  // auto-tags + model-written captions replaced) and returns the queued count immediately
+  // so the dialog can close and hand off to the standard progress toast.
+  ipcMain.handle('ai:reanalyzeAll', () => {
+    const rows = db
+      .prepare('SELECT id FROM images WHERE is_trashed = 0')
+      .all() as Array<{ id: string }>;
+    if (rows.length === 0) return { queued: 0 };
+
+    for (const { id } of rows) aiRefreshIds.add(id);
+    aiQueue.push(...rows.map((r) => r.id));
+    aiTotal += rows.length;
+    broadcastAutotag(`Re-analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+    if (!aiDraining) void drainAiQueue();
+    return { queued: rows.length };
   });
 
   ipcMain.handle('ai:searchByText', async (_, query: string, limit?: number, opts?: unknown) => {
