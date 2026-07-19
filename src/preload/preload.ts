@@ -3,6 +3,17 @@ import os from 'node:os';
 
 import type { SimilarRefineMode } from '../shared/similar-refine';
 
+/** Update metadata surfaced to the renderer — mirrors UpdateInfo in main/updater.ts. Declared
+    locally so the preload bundle never imports the main process (which pulls in electron's app). */
+interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes: string;
+  pkgUrl: string;
+  size: number;
+  filename: string;
+}
+
 let currentFolderId: string | null = null;
 
 /** Cache the username at preload time — it doesn't change while the app is running. */
@@ -94,6 +105,26 @@ const api = {
     return () => ipcRenderer.removeListener('autotag:progress', handler);
   },
 
+  // App auto-update (GitHub Releases → .pkg installer)
+  checkForUpdate: () =>
+    ipcRenderer.invoke('update:check') as Promise<{
+      updateAvailable: boolean;
+      info?: UpdateInfo;
+      error?: string;
+    }>,
+  downloadUpdate: (info: UpdateInfo) => ipcRenderer.invoke('update:download', info) as Promise<string>,
+  installUpdate: (pkgPath: string) => ipcRenderer.invoke('update:install', pkgPath) as Promise<boolean>,
+  onUpdateProgress: (callback: (p: { completed: number; total: number }) => void) => {
+    const handler = (_: unknown, p: { completed: number; total: number }) => callback(p);
+    ipcRenderer.on('update:downloadProgress', handler);
+    return () => { ipcRenderer.removeListener('update:downloadProgress', handler); };
+  },
+  onUpdateAvailable: (callback: (info: UpdateInfo) => void) => {
+    const handler = (_: unknown, info: UpdateInfo) => callback(info);
+    ipcRenderer.on('update:available', handler);
+    return () => { ipcRenderer.removeListener('update:available', handler); };
+  },
+
   // Ollama model setup
   isOllamaServerRunning: () => ipcRenderer.invoke('ollama:isServerRunning'),
   isModelReady: (model: string) => ipcRenderer.invoke('ollama:isModelReady', model),
@@ -130,7 +161,7 @@ const api = {
 
   // Native menu events ("File → …") forwarded from the main process to the renderer.
   onMenuEvent: (
-    channel: 'menu:importFiles' | 'menu:exportLibrary' | 'menu:importLibrary' | 'menu:updateModel',
+    channel: 'menu:importFiles' | 'menu:exportLibrary' | 'menu:importLibrary' | 'menu:updateModel' | 'menu:checkUpdate',
     callback: () => void,
   ) => {
     const handler = () => callback();

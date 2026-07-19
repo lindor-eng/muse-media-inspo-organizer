@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { startOllamaServer, stopOllamaServer } from './ai/ollama-server';
 import { backfillMissingPalettes } from './color-extractor';
 import { upgradeEmbeddingIndexIfNeeded } from './ai/embeddings';
+import { checkForUpdate, downloadUpdate, installAndRestart, type UpdateInfo } from './updater';
 
 if (started) app.quit();
 
@@ -66,6 +67,7 @@ function buildAppMenu(): void {
         { label: 'Import Library…', click: sendToRenderer('menu:importLibrary') },
         { type: 'separator' },
         { label: 'Update AI Model…', click: sendToRenderer('menu:updateModel') },
+        { label: 'Check for Updates…', click: sendToRenderer('menu:checkUpdate') },
       ],
     },
     { role: 'editMenu' },
@@ -131,6 +133,22 @@ app.on('ready', async () => {
       })
       .catch((err) => console.warn('[embeddings] index upgrade failed:', err));
   }, 8000);
+
+  // Silent update check on launch (packaged builds only — dev runs report app.getVersion() of the
+  // dev tree, and there's no installer to swap in). If a newer release exists, tell the renderer so
+  // it can prompt; failures stay silent here — the user can still trigger a manual check that does
+  // surface errors. Delayed so it never competes with first paint or the Ollama warm-up.
+  if (app.isPackaged) {
+    setTimeout(() => {
+      checkForUpdate()
+        .then((result) => {
+          if (result.updateAvailable && result.info) {
+            mainWindow?.webContents.send('update:available', result.info);
+          }
+        })
+        .catch((err) => console.warn('[update] startup check failed:', err));
+    }, 12000);
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -192,4 +210,21 @@ ipcMain.handle('theme:get', () => {
 
 nativeTheme.on('updated', () => {
   mainWindow?.webContents.send('theme:changed', nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+});
+
+// App auto-update (GitHub Releases → unsigned .pkg → osascript installer → relaunch).
+ipcMain.handle('update:check', () => checkForUpdate());
+
+ipcMain.handle('update:download', async (_event, info: UpdateInfo) => {
+  const win = BrowserWindow.getAllWindows()[0];
+  const pkgPath = await downloadUpdate(info, (p) => {
+    win?.webContents.send('update:downloadProgress', p);
+  });
+  return pkgPath;
+});
+
+// Installing quits the app, so this only "returns" if the user cancels the admin prompt or it fails.
+ipcMain.handle('update:install', async (_event, pkgPath: string) => {
+  await installAndRestart(pkgPath);
+  return true;
 });
