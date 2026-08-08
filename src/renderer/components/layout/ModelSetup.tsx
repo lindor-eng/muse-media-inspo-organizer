@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Download, Check, Loader2, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Download, Check, Loader2, Sparkles, AlertTriangle, RefreshCw } from 'lucide-react';
 import { api } from '../../lib/ipc';
+import { OLLAMA_FAILURE_MESSAGE, type OllamaStartResult } from '../../../shared/ollama-status';
 
 const VISION_MODEL = 'qwen3-vl:8b-instruct';
 const EMBED_MODEL = 'nomic-embed-text';
@@ -12,38 +13,48 @@ interface PullProgress {
   completed: number;
 }
 
+type State = 'checking' | 'ready' | 'server-down' | 'needs-download' | 'downloading' | 'done';
+
 export function ModelSetup() {
-  const [state, setState] = useState<'checking' | 'ready' | 'needs-download' | 'downloading' | 'done'>('checking');
+  const [state, setState] = useState<State>('checking');
   const [progress, setProgress] = useState<PullProgress | null>(null);
+  const [serverFailure, setServerFailure] = useState<OllamaStartResult | null>(null);
+
+  /** `cancelled` is only honoured by the mount effect; manual retries always apply. */
+  const check = useCallback(async (isCancelled: () => boolean = () => false) => {
+    setState('checking');
+    try {
+      // Start the engine rather than probing and hoping. Previously a down server fell through
+      // to 'ready', which renders nothing — so a broken AI install looked identical to a
+      // healthy one and went unnoticed until the user tried to use a feature.
+      const start = await api.ensureOllamaServer();
+      if (!start.running) {
+        if (!isCancelled()) {
+          setServerFailure(start);
+          setState('server-down');
+        }
+        return;
+      }
+
+      const [hasVision, hasEmbed] = await Promise.all([
+        api.isModelReady(VISION_MODEL),
+        api.isModelReady(EMBED_MODEL),
+      ]);
+      if (!isCancelled()) setState(hasVision && hasEmbed ? 'ready' : 'needs-download');
+    } catch (err) {
+      console.error('[model-setup] check failed:', err);
+      if (!isCancelled()) {
+        setServerFailure({ running: false, reason: 'unknown', detail: String(err) });
+        setState('server-down');
+      }
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-
-    const check = async () => {
-      try {
-        const serverUp = await api.isOllamaServerRunning();
-        if (!serverUp) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const retry = await api.isOllamaServerRunning();
-          if (!retry) {
-            if (!cancelled) setState('ready');
-            return;
-          }
-        }
-
-        const [hasVision, hasEmbed] = await Promise.all([
-          api.isModelReady(VISION_MODEL),
-          api.isModelReady(EMBED_MODEL),
-        ]);
-        if (!cancelled) setState(hasVision && hasEmbed ? 'ready' : 'needs-download');
-      } catch {
-        if (!cancelled) setState('ready');
-      }
-    };
-
-    check();
+    void check(() => cancelled);
     return () => { cancelled = true; };
-  }, []);
+  }, [check]);
 
   useEffect(() => {
     if (state !== 'downloading') return;
@@ -95,6 +106,41 @@ export function ModelSetup() {
             <p className="text-xs text-gray-500">One-time download</p>
           </div>
         </div>
+
+        {state === 'server-down' && (
+          <>
+            <div className="flex items-start gap-3 py-2 mb-5">
+              <AlertTriangle size={18} className="text-amber-400 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-sm text-gray-400">
+                  {OLLAMA_FAILURE_MESSAGE[serverFailure?.reason ?? 'unknown']}
+                </p>
+                {serverFailure?.detail && (
+                  <p className="mt-2 text-xs text-gray-600 font-mono break-words">
+                    {serverFailure.detail}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => void check()}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg transition-colors text-sm font-medium"
+            >
+              <RefreshCw size={15} />
+              Try again
+            </button>
+            <p className="text-xs text-gray-600 mt-3 text-center">
+              Muse works without AI — tagging, alt text, and smart search stay unavailable
+              until the engine starts.
+            </p>
+            <button
+              onClick={() => setState('ready')}
+              className="w-full mt-2 px-4 py-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              Continue without AI
+            </button>
+          </>
+        )}
 
         {state === 'needs-download' && (
           <>

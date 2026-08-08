@@ -4,7 +4,7 @@ import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { initDatabase } from './database/connection';
 import { registerIpcHandlers } from './ipc-handlers';
-import { startOllamaServer, stopOllamaServer } from './ai/ollama-server';
+import { ensureOllamaServer, stopOllamaServer } from './ai/ollama-server';
 import { backfillMissingPalettes } from './color-extractor';
 import { upgradeEmbeddingIndexIfNeeded } from './ai/embeddings';
 import { checkForUpdate, downloadUpdate, installAndRestart, type UpdateInfo } from './updater';
@@ -88,18 +88,25 @@ app.on('ready', async () => {
   buildAppMenu();
   createWindow();
 
-  // Start managed Ollama server in background
+  // Start managed Ollama server in background. A failure here is no longer terminal for the
+  // session — File → Update AI Model retries through the same path.
   try {
-    await startOllamaServer();
-    console.log('[app] Ollama server ready');
+    const start = await ensureOllamaServer();
+    if (start.running) {
+      console.log('[app] Ollama server ready');
 
-    // Re-caption images produced by an older vision model / prompt generation.
-    // Runs through the normal AI queue (progress toast, serial, interruptible) —
-    // captions_version is stamped per image, so a quit mid-run resumes next launch.
-    setTimeout(() => {
-      const queued = ipcHooks.queueCaptionUpgradeIfNeeded();
-      if (queued > 0) console.log(`[captions] queued ${queued} images for caption upgrade`);
-    }, 10000);
+      // Re-caption images produced by an older vision model / prompt generation.
+      // Runs through the normal AI queue (progress toast, serial, interruptible) —
+      // captions_version is stamped per image, so a quit mid-run resumes next launch.
+      setTimeout(() => {
+        const queued = ipcHooks.queueCaptionUpgradeIfNeeded();
+        if (queued > 0) console.log(`[captions] queued ${queued} images for caption upgrade`);
+      }, 10000);
+    } else {
+      console.error(
+        `[app] Ollama server unavailable (${start.reason}): ${start.detail ?? 'no detail'}`,
+      );
+    }
   } catch (err) {
     console.error('[app] Failed to start Ollama server:', err);
   }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, Check, Loader2, Sparkles, AlertTriangle, RefreshCw, X } from 'lucide-react';
 import { api } from '../../lib/ipc';
+import { OLLAMA_FAILURE_MESSAGE, type OllamaStartResult } from '../../../shared/ollama-status';
 
 const VISION_MODEL = 'qwen3-vl:8b-instruct';
 const EMBED_MODEL = 'nomic-embed-text';
@@ -46,6 +47,7 @@ export function ModelUpdateDialog() {
   const [progress, setProgress] = useState<PullProgress | null>(null);
   const [imageCount, setImageCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [serverFailure, setServerFailure] = useState<OllamaStartResult | null>(null);
   /** Guards against overlapping opens (e.g. re-clicking the menu mid-check). */
   const busy = useRef(false);
 
@@ -53,8 +55,11 @@ export function ModelUpdateDialog() {
   // verifies existing layers and fetches only the gaps, so re-running is cheap when the model
   // is already good — exactly what we want for the "never downloaded the new model" case.
   const ensureModels = useCallback(async (): Promise<boolean> => {
-    const serverUp = await api.isOllamaServerRunning();
-    if (!serverUp) {
+    // Actively (re)start the engine rather than just probing it — the launch-time start is a
+    // single attempt, so for anyone it failed on, probing here could never come back true.
+    const start = await api.ensureOllamaServer();
+    if (!start.running) {
+      setServerFailure(start);
       setState('server-down');
       return false;
     }
@@ -83,6 +88,7 @@ export function ModelUpdateDialog() {
     if (busy.current) return;
     busy.current = true;
     setError(null);
+    setServerFailure(null);
     setProgress(null);
     setState('checking');
     try {
@@ -152,7 +158,7 @@ export function ModelUpdateDialog() {
         {state === 'checking' && (
           <div className="flex items-center gap-2 py-6 text-sm text-gray-400">
             <Loader2 size={16} className="animate-spin" />
-            Checking installed models…
+            Starting the local AI engine…
           </div>
         )}
 
@@ -160,10 +166,16 @@ export function ModelUpdateDialog() {
           <>
             <div className="flex items-start gap-3 py-2 mb-5">
               <AlertTriangle size={18} className="text-amber-400 mt-0.5 shrink-0" />
-              <p className="text-sm text-gray-400">
-                The local AI engine isn&apos;t running yet. Wait a few seconds after launching Muse,
-                then try again from <span className="text-gray-300">File → Update AI Model</span>.
-              </p>
+              <div className="min-w-0">
+                <p className="text-sm text-gray-400">
+                  {OLLAMA_FAILURE_MESSAGE[serverFailure?.reason ?? 'unknown']}
+                </p>
+                {serverFailure?.detail && (
+                  <p className="mt-2 text-xs text-gray-600 font-mono break-words">
+                    {serverFailure.detail}
+                  </p>
+                )}
+              </div>
             </div>
             <button
               onClick={() => void run()}

@@ -1,12 +1,24 @@
 import { app } from 'electron';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 
+import type { OllamaStartFailure, OllamaStartResult } from '../../shared/ollama-status';
+
 const OLLAMA_PORT = 11434;
 const OLLAMA_HOST = `http://127.0.0.1:${OLLAMA_PORT}`;
+/** Generous on purpose: a first cold start of a large unsigned binary also pays for Gatekeeper
+    verification, which routinely outlasts a short timeout on slower machines. */
+const START_TIMEOUT_MS = 60000;
 
 let ollamaProcess: ChildProcess | null = null;
+/** Shared across concurrent callers — the launch-time start and a renderer-triggered one can
+    overlap, and without this the second would see a still-starting server as wedged and kill it. */
+let startInFlight: Promise<OllamaStartResult> | null = null;
+/** Failure text from the most recent spawn attempt, kept so a later retry can explain itself. */
+let lastSpawnError: string | null = null;
+/** Rolling tail of the server's stderr — usually the only clue when it dies during startup. */
+let stderrTail = '';
 
 function getBundledOllamaPath(): string {
   const isPackaged = app.isPackaged;
@@ -25,27 +37,99 @@ export function getOllamaHost(): string {
   return OLLAMA_HOST;
 }
 
-export async function startOllamaServer(): Promise<void> {
-  if (ollamaProcess) return;
+/**
+ * macOS ships this binary unsigned inside an unsigned app. Installing from the .zip — rather
+ * than the .pkg, whose postinstall runs `xattr -cr` — leaves the quarantine flag on it, and
+ * some zip extractors drop the executable bit. Either one makes `spawn` fail with EACCES and
+ * the AI engine never starts. Both repairs are cheap and idempotent, so run them before every
+ * spawn instead of relying on how the user happened to install.
+ */
+function prepareBundledBinary(binPath: string): void {
+  // Only ever touch the copy we ship. In dev this path is Homebrew's ollama, which isn't
+  // ours to modify — and it's installed correctly anyway.
+  if (process.platform !== 'darwin' || !app.isPackaged) return;
 
-  const isRunning = await isOllamaServerRunning();
-  if (isRunning) {
-    console.log('[ollama-server] Already running externally');
-    return;
+  try {
+    fs.chmodSync(binPath, 0o755);
+  } catch (err) {
+    // Read-only or root-owned install — spawn will report the real problem.
+    console.warn('[ollama-server] chmod failed:', err);
+  }
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-d', 'com.apple.quarantine', binPath], { stdio: 'ignore' });
+    console.log('[ollama-server] Cleared quarantine flag on binary');
+  } catch {
+    // Non-zero exit means the attribute wasn't there — the healthy case.
+  }
+}
+
+/** Turn whatever went wrong into a reason the renderer can act on. */
+function classifyFailure(exitCode: number | null): OllamaStartResult {
+  if (lastSpawnError) {
+    const reason: OllamaStartFailure = lastSpawnError.includes('EACCES')
+      ? 'not-executable'
+      : 'spawn-failed';
+    return { running: false, reason, detail: lastSpawnError };
+  }
+  if (exitCode !== null) {
+    return {
+      running: false,
+      reason: 'spawn-failed',
+      detail: `exited with code ${exitCode}${stderrTail ? `: ${stderrTail.trim()}` : ''}`,
+    };
+  }
+  return { running: false, reason: 'timeout', detail: stderrTail.trim() || undefined };
+}
+
+/**
+ * Start the server if it isn't already up, reporting *why* it failed rather than throwing.
+ * Safe to call repeatedly — the launch-time call and File → Update AI Model's "Try again"
+ * both come through here, so a failed start at launch is recoverable without a relaunch.
+ */
+export function ensureOllamaServer(): Promise<OllamaStartResult> {
+  if (!startInFlight) {
+    startInFlight = startServerOnce().finally(() => {
+      startInFlight = null;
+    });
+  }
+  return startInFlight;
+}
+
+async function startServerOnce(): Promise<OllamaStartResult> {
+  if (await isOllamaServerRunning()) {
+    if (!ollamaProcess) console.log('[ollama-server] Already running externally');
+    return { running: true };
+  }
+
+  // Tracked but not answering — it's wedged or still dying. Replace it rather than
+  // returning early, which would make retries permanently no-op.
+  if (ollamaProcess) {
+    console.log('[ollama-server] Process not responding; restarting');
+    stopOllamaServer();
   }
 
   const ollamaPath = getBundledOllamaPath();
   if (!fs.existsSync(ollamaPath)) {
     console.error('[ollama-server] Binary not found at:', ollamaPath);
-    throw new Error('Ollama binary not found. Please reinstall the app.');
+    return { running: false, reason: 'binary-missing', detail: ollamaPath };
   }
 
+  prepareBundledBinary(ollamaPath);
+
   const modelsDir = getOllamaModelsDir();
-  fs.mkdirSync(modelsDir, { recursive: true });
+  try {
+    fs.mkdirSync(modelsDir, { recursive: true });
+  } catch (err) {
+    return { running: false, reason: 'unknown', detail: `models dir: ${String(err)}` };
+  }
 
   console.log('[ollama-server] Starting:', ollamaPath, 'models:', modelsDir);
+  lastSpawnError = null;
+  stderrTail = '';
+  let exitCode: number | null = null;
 
-  ollamaProcess = spawn(ollamaPath, ['serve'], {
+  const child = spawn(ollamaPath, ['serve'], {
     env: {
       ...process.env,
       OLLAMA_HOST: `127.0.0.1:${OLLAMA_PORT}`,
@@ -53,21 +137,37 @@ export async function startOllamaServer(): Promise<void> {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  ollamaProcess = child;
 
-  ollamaProcess.stdout?.on('data', (data) => {
+  // Attach before the first await: an unhandled 'error' event on a ChildProcess throws, and
+  // EACCES/ENOENT here are exactly the failures we expect — that throw would have taken the
+  // main process down while hiding the cause.
+  child.on('error', (err) => {
+    lastSpawnError = String(err);
+    console.error('[ollama-server] Spawn error:', err);
+    if (ollamaProcess === child) ollamaProcess = null;
+  });
+
+  child.stdout?.on('data', (data) => {
     console.log('[ollama-server]', data.toString().trim());
   });
 
-  ollamaProcess.stderr?.on('data', (data) => {
-    console.log('[ollama-server:err]', data.toString().trim());
+  child.stderr?.on('data', (data) => {
+    const text = data.toString();
+    stderrTail = (stderrTail + text).slice(-2000);
+    console.log('[ollama-server:err]', text.trim());
   });
 
-  ollamaProcess.on('exit', (code) => {
+  child.on('exit', (code) => {
+    exitCode = code ?? -1;
     console.log('[ollama-server] Exited with code:', code);
-    ollamaProcess = null;
+    if (ollamaProcess === child) ollamaProcess = null;
   });
 
-  await waitForServer(15000);
+  const started = await waitForServer(START_TIMEOUT_MS, () => exitCode !== null || lastSpawnError !== null);
+  if (started) return { running: true };
+
+  return classifyFailure(exitCode);
 }
 
 export function stopOllamaServer(): void {
@@ -78,13 +178,16 @@ export function stopOllamaServer(): void {
   }
 }
 
-async function waitForServer(timeoutMs: number): Promise<void> {
+/** Poll until the server answers. Gives up early once the child is known dead, so a failed
+    spawn reports in milliseconds instead of burning the full timeout. */
+async function waitForServer(timeoutMs: number, isDead: () => boolean): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await isOllamaServerRunning()) return;
+    if (await isOllamaServerRunning()) return true;
+    if (isDead()) return false;
     await new Promise((r) => setTimeout(r, 300));
   }
-  throw new Error('Ollama server failed to start within timeout');
+  return false;
 }
 
 export async function isOllamaServerRunning(): Promise<boolean> {

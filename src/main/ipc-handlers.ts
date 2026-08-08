@@ -19,7 +19,12 @@ import {
   saveSimilarityPrefs,
   type SimilarityPrefs,
 } from './database/similarity-prefs';
-import { isModelAvailable, pullModel, isOllamaServerRunning } from './ai/ollama-server';
+import {
+  isModelAvailable,
+  pullModel,
+  isOllamaServerRunning,
+  ensureOllamaServer,
+} from './ai/ollama-server';
 import { exportLibrary } from './library-export';
 import { inspectImport, applyImport, cancelImport } from './library-import';
 
@@ -356,6 +361,9 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
 
   // Ollama model setup
   ipcMain.handle('ollama:isServerRunning', () => isOllamaServerRunning());
+  // Unlike the probe above, this actually (re)starts the server. The launch-time start is a
+  // single attempt, so without this a failure there stranded the user until they relaunched.
+  ipcMain.handle('ollama:ensureServer', () => ensureOllamaServer());
   ipcMain.handle('ollama:isModelReady', (_, model: string) => isModelAvailable(model));
 
   ipcMain.handle('ollama:pullModel', async (_, model: string) => {

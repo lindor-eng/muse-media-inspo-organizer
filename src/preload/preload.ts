@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import os from 'node:os';
 
 import type { SimilarRefineMode } from '../shared/similar-refine';
+import type { OllamaStartResult } from '../shared/ollama-status';
 
 /** Update metadata surfaced to the renderer — mirrors UpdateInfo in main/updater.ts. Declared
     locally so the preload bundle never imports the main process (which pulls in electron's app). */
@@ -127,6 +128,9 @@ const api = {
 
   // Ollama model setup
   isOllamaServerRunning: () => ipcRenderer.invoke('ollama:isServerRunning'),
+  /** Starts the server if it's down and reports why if it can't — use this over the plain
+      probe anywhere the user is waiting on the AI engine. */
+  ensureOllamaServer: () => ipcRenderer.invoke('ollama:ensureServer') as Promise<OllamaStartResult>,
   isModelReady: (model: string) => ipcRenderer.invoke('ollama:isModelReady', model),
   pullModel: (model: string) => ipcRenderer.invoke('ollama:pullModel', model),
   onPullProgress: (callback: (data: { model: string; status: string; total: number; completed: number }) => void) => {
