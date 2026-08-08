@@ -96,5 +96,8 @@ out/
 data/
 *.db
 
-# Bundled binaries
+# Bundled binaries — fetched at build time by scripts/fetch-ollama.mjs
 resources/ollama
+
+# Download cache for the bundled engine tarball
+.cache/

@@ -20,13 +20,23 @@ let lastSpawnError: string | null = null;
 /** Rolling tail of the server's stderr — usually the only clue when it dies during startup. */
 let stderrTail = '';
 
+/**
+ * The engine ships as a directory, not a lone binary — `ollama` finds its runner and GPU
+ * libraries as siblings (<exeDir>/llama-server). Point at the executable inside it: the
+ * directory itself passes an existsSync check but fails spawn with EACCES.
+ */
 function getBundledOllamaPath(): string {
-  const isPackaged = app.isPackaged;
-  if (isPackaged) {
-    const resourcesPath = path.join(process.resourcesPath, 'ollama');
-    return resourcesPath;
-  }
-  return '/opt/homebrew/bin/ollama';
+  if (app.isPackaged) return path.join(process.resourcesPath, 'ollama', 'ollama');
+
+  // Dev: prefer the fetched engine (scripts/fetch-ollama.mjs) so dev matches production,
+  // falling back to a system install for machines that already have one.
+  const candidates = [
+    path.join(app.getAppPath(), 'resources', 'ollama', 'ollama'),
+    path.join(process.cwd(), 'resources', 'ollama', 'ollama'),
+    '/opt/homebrew/bin/ollama',
+    '/usr/local/bin/ollama',
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
 }
 
 function getOllamaModelsDir(): string {
@@ -45,20 +55,28 @@ export function getOllamaHost(): string {
  * spawn instead of relying on how the user happened to install.
  */
 function prepareBundledBinary(binPath: string): void {
-  // Only ever touch the copy we ship. In dev this path is Homebrew's ollama, which isn't
-  // ours to modify — and it's installed correctly anyway.
+  // Only ever touch the copy we ship. In dev this may be a system ollama, which isn't ours
+  // to modify — and it's installed correctly anyway.
   if (process.platform !== 'darwin' || !app.isPackaged) return;
 
-  try {
-    fs.chmodSync(binPath, 0o755);
-  } catch (err) {
-    // Read-only or root-owned install — spawn will report the real problem.
-    console.warn('[ollama-server] chmod failed:', err);
+  const engineDir = path.dirname(binPath);
+
+  // ollama spawns llama-server itself, so a lost executable bit there breaks inference just
+  // as thoroughly as it breaks startup here.
+  for (const name of ['ollama', 'llama-server', 'llama-quantize']) {
+    const target = path.join(engineDir, name);
+    if (!fs.existsSync(target)) continue;
+    try {
+      fs.chmodSync(target, 0o755);
+    } catch (err) {
+      // Read-only or root-owned install — spawn will report the real problem.
+      console.warn(`[ollama-server] chmod ${name} failed:`, err);
+    }
   }
 
   try {
-    execFileSync('/usr/bin/xattr', ['-d', 'com.apple.quarantine', binPath], { stdio: 'ignore' });
-    console.log('[ollama-server] Cleared quarantine flag on binary');
+    execFileSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', engineDir], { stdio: 'ignore' });
+    console.log('[ollama-server] Cleared quarantine flag on engine');
   } catch {
     // Non-zero exit means the attribute wasn't there — the healthy case.
   }

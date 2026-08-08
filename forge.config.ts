@@ -19,6 +19,25 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['darwin']),
   ],
   hooks: {
+    // Runs for `start` and `make` alike, so dev and packaged builds use the same pinned
+    // engine — no reliance on whatever ollama happens to be installed on the machine.
+    generateAssets: async () => {
+      execSync('node scripts/fetch-ollama.mjs', { cwd: __dirname, stdio: 'inherit' });
+    },
+
+    // Fail loudly rather than shipping an app whose AI engine is missing. A release built
+    // without this went out once already and left users with an unfixable "engine isn't
+    // running" dialog.
+    prePackage: async () => {
+      const binary = path.resolve(__dirname, 'resources/ollama/ollama');
+      if (!fs.existsSync(binary) || !fs.statSync(binary).isFile()) {
+        throw new Error(
+          `Bundled Ollama engine missing at ${binary}\n` +
+            'Run `npm run fetch:ollama` before packaging.',
+        );
+      }
+    },
+
     postPackage: async (_config, options) => {
       const appPath = path.join(options.outputPaths[0], 'Muse.app', 'Contents', 'Resources', 'app');
       const nodeModulesPath = path.join(appPath, 'node_modules');
@@ -51,8 +70,10 @@ const config: ForgeConfig = {
       const scriptsDir = path.resolve(__dirname, 'resources/scripts');
       const outDir = path.resolve(__dirname, 'out/make');
       fs.mkdirSync(outDir, { recursive: true });
+      // Version + arch in the filename so released installers are self-identifying and
+      // successive builds don't silently overwrite each other.
       const componentPkg = path.join(outDir, 'Muse-component.pkg');
-      const finalPkg = path.join(outDir, 'Muse-Installer.pkg');
+      const finalPkg = path.join(outDir, `Muse-Installer-${pkgJson.version}-${options.arch}.pkg`);
       execSync(
         `pkgbuild --component "${appBundle}" --install-location /Applications --scripts "${scriptsDir}" "${componentPkg}"`,
         { stdio: 'inherit' }
