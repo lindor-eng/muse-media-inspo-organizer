@@ -195,6 +195,19 @@ export async function downloadUpdate(
 }
 
 /**
+ * Quote for the POSIX shell. Single quotes suppress every form of interpolation, so a path
+ * containing spaces, $, or backticks is inert; only an embedded single quote needs work.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Quote as an AppleScript string literal — backslash and double-quote are its only escapes. */
+function appleScriptQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
  * Install the downloaded .pkg and relaunch Muse into the new version. macOS `installer` needs root
  * to write /Applications, so we go through osascript's `with administrator privileges`, which shows
  * the native password prompt (unavoidable for an unsigned pkg going to /Applications). We escape the
@@ -206,10 +219,13 @@ export async function installAndRestart(pkgPath: string): Promise<void> {
     throw new Error('Downloaded installer is missing.');
   }
 
-  // AppleScript string escaping: backslash and double-quote.
-  const escaped = pkgPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const shellCmd = `installer -pkg "${escaped}" -target /`;
-  const appleScript = `do shell script "${shellCmd}" with administrator privileges`;
+  // Two levels of quoting, and they must not be conflated: the path is first quoted for the
+  // POSIX shell, then the whole command is quoted as an AppleScript string literal. Building
+  // the shell command with embedded double quotes and dropping it into a double-quoted
+  // AppleScript string terminates that string early — the script fails to compile with
+  // "A identifier can't go after this number (-2740)" as the temp path parses as bare tokens.
+  const shellCmd = `installer -pkg ${shellQuote(pkgPath)} -target /`;
+  const appleScript = `do shell script ${appleScriptQuote(shellCmd)} with administrator privileges`;
 
   await new Promise<void>((resolve, reject) => {
     execFile('osascript', ['-e', appleScript], (error, _stdout, stderr) => {
