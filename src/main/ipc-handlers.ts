@@ -97,7 +97,7 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
   });
 
   // Import
-  // Singleton AI pipeline so concurrent imports never run LLaVA / Ollama in parallel.
+  // Singleton AI pipeline so concurrent imports never run vision jobs in parallel.
   // New images enqueued mid-run extend the in-flight totals instead of starting a second drainer.
   const aiQueue: string[] = [];
   /** Ids queued for a caption *refresh* (model/prompt upgrade or explicit re-analyze):

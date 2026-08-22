@@ -1,12 +1,13 @@
 # Muse
 
-A local macOS desktop app for collecting, organizing, and searching design/image files. Built with Electron, React, and TypeScript. Includes optional AI-powered auto-tagging and natural language search via Ollama.
+A local macOS desktop app for collecting, organizing, and searching design/image files. Built with Electron, React, and TypeScript. Includes optional AI-powered auto-tagging and natural language search, powered by a bundled Ollama engine that runs entirely on-device.
 
 ## Prerequisites
 
 - **Node.js 22+** (check with `node -v`)
 - **macOS** (Apple Silicon or Intel)
-- **Ollama** (optional, for AI features): `brew install ollama`
+
+Ollama is **not** a prerequisite — the engine is downloaded into `resources/ollama/` at build time (and on `npm start`) by `scripts/fetch-ollama.mjs`, pinned to a specific version and checksum. The first fetch pulls ~138 MB.
 
 ## Getting Started
 
@@ -45,18 +46,16 @@ src/
 
 ## AI Features (Optional)
 
-AI features require Ollama running locally. Without it, the app works normally — AI features simply won't be available.
+The app bundles and manages its own Ollama server — there's nothing to install or start by hand. On first launch it offers to download the two models it needs:
 
-```bash
-# Start Ollama
-ollama serve
+| Model | Size | Used for |
+|-------|------|----------|
+| `qwen3-vl:8b-instruct` | ~6 GB | Vision: auto-tagging, alt text, descriptions |
+| `nomic-embed-text` | ~274 MB | Text embeddings for similarity + natural language search |
 
-# Pull the vision model for auto-tagging + alt text
-ollama pull llava:7b-v1.6-mistral-q4_K_M
+Models are stored in `userData/ollama-models`. If you decline (or the download fails), the app works normally — the AI features simply stay unavailable, and you can retry any time from **File → Update AI Model**.
 
-# Pull the text embedding model for similarity / search
-ollama pull nomic-embed-text
-```
+If you already have an Ollama server on `127.0.0.1:11434`, the app attaches to it instead of spawning its own.
 
 ## Scripts
 
@@ -66,6 +65,7 @@ ollama pull nomic-embed-text
 | `npm run package` | Package the app for distribution |
 | `npm run make` | Create distributable installers |
 | `npm run lint` | Run ESLint |
+| `npm run fetch:ollama` | Fetch/refresh the bundled Ollama engine (`--force` to re-download) |
 
 ## Tech Stack
 
@@ -76,7 +76,7 @@ ollama pull nomic-embed-text
 - **SQLite (better-sqlite3)** — Local database
 - **sharp** — Thumbnail generation
 - **node-vibrant** — Color palette extraction
-- **Ollama + LLaVA** — AI auto-tagging (optional)
+- **Ollama + Qwen3-VL** — Bundled on-device AI for auto-tagging and search
 
 ## Contributing
 
@@ -91,8 +91,8 @@ ollama pull nomic-embed-text
 
 ### Notes for Contributors
 
-- The database file (`data/library.db`) is gitignored — it's created automatically on first launch
-- Imported images are copied into `data/originals/` with thumbnails in `data/thumbnails/`
+- The library lives outside the repo, under Electron's `userData` directory: `library/library.db`, plus `library/originals/` and `library/thumbnails/` — all created automatically on first launch
+- `resources/ollama/` is gitignored; it's fetched at build time and is far too large for git
 - The preload script handles external file drops since `webUtils.getPathForFile()` only works in the preload context
 - IPC communication follows the pattern: renderer calls `window.electronAPI.*` → preload invokes `ipcRenderer.invoke` → main handles in `ipc-handlers.ts`
 

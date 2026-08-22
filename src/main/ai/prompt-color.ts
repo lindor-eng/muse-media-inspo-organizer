@@ -1,6 +1,6 @@
 /**
  * Detect color intent in a moodboard prompt and score image palettes against it.
- * Caption text only mentions color when LLaVA happened to notice it; the stored
+ * Caption text only mentions color when the vision model happened to notice it; the stored
  * palettes (image_colors) know the truth, so color-heavy prompts blend both.
  */
 

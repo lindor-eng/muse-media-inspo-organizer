@@ -1,6 +1,6 @@
 /**
  * Smoke-test a candidate vision model + enriched caption prompt against a handful of
- * library images, side-by-side with the incumbent LLaVA output already stored in the DB.
+ * library images, side-by-side with the caption output already stored in the DB.
  * Verifies: (a) the model answers in the Alt/Description/Tags format parseAnalysis expects,
  * (b) caption quality/design-vocabulary actually improves.
  *
@@ -111,8 +111,8 @@ for (const id of IMAGE_IDS) {
   const src = img.thumbnail_path || img.original_path;
   console.log('='.repeat(100));
   console.log(`IMAGE: ${img.filename}`);
-  console.log(`\n--- stored LLaVA alt ---\n${img.alt_text || '(none)'}`);
-  console.log(`--- stored LLaVA notes ---\n${(img.notes || '(none)').slice(0, 300)}`);
+  console.log(`\n--- stored alt ---\n${img.alt_text || '(none)'}`);
+  console.log(`--- stored notes ---\n${(img.notes || '(none)').slice(0, 300)}`);
 
   const b64 = await toBase64(src, 1024);
   const t0 = Date.now();

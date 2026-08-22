@@ -29,7 +29,7 @@ export function upsertImageEmbedding(db: Database.Database, imageId: string, vec
 
 /**
  * Compose the text we embed for an image — alt text, description, and tag names —
- * so the resulting vector captures both subject and (LLaVA-described) visual attributes.
+ * so the resulting vector captures both subject and (model-described) visual attributes.
  */
 export function composeEmbeddingText(
   altText: string,

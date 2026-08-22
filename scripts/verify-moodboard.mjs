@@ -35,7 +35,7 @@ async function hyde(brief, count = 3) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'llava:7b-v1.6-mistral-q4_K_M',
+      model: 'qwen3-vl:8b-instruct',
       prompt: `You write alt-text captions for images in a design library.
 A user is building a moodboard described as: "${brief}"
 
