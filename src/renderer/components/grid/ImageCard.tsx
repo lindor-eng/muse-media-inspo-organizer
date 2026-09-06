@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { FolderOpen, Tag, Trash2, Plus, RotateCcw, Sparkles } from 'lucide-react';
 import { useAppStore, type ImageRecord } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
+import { formatDuration, isVideoFileType } from '../../../shared/media-type';
 
 interface Props {
   image: ImageRecord;
@@ -52,6 +53,10 @@ function ImageCardImpl({ image }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const tagInputRef = useRef<HTMLInputElement>(null);
 
+  // A video card shows its poster frame, never the clip itself — the grid stays a wall of
+  // stills no matter how many videos are in view, and playback is the focus view's job.
+  const isVideo = isVideoFileType(image.file_type);
+  const durationLabel = isVideo ? formatDuration(image.duration_ms) : null;
   const imageSrc = image.thumbnail_path
     ? `local-file://${image.thumbnail_path}`
     : `local-file://${image.original_path}`;
@@ -203,6 +208,17 @@ function ImageCardImpl({ image }: Props) {
           className="h-full w-auto block bg-gray-800 pointer-events-none"
           loading="lazy"
         />
+        {isVideo && (
+          // Bottom-right, opposite corner from the selection chip, so neither ever covers the
+          // other. The scrim is on the pill rather than the whole card: a full-card gradient
+          // would misrepresent the poster's own colors in a library browsed for exactly that.
+          <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white backdrop-blur-sm">
+            <svg width="7" height="8" viewBox="0 0 7 8" fill="currentColor" aria-hidden="true">
+              <path d="M0 0.6c0-.45.5-.73.88-.49l5.4 3.4a.58.58 0 0 1 0 .98l-5.4 3.4A.58.58 0 0 1 0 7.4z" />
+            </svg>
+            {durationLabel && <span>{durationLabel}</span>}
+          </div>
+        )}
         {isBulkSelected ? (
           // White halo + softer dark outer ring (#333) keep the blue chip visible across light
           // and dark thumbnails alike.

@@ -147,6 +147,19 @@ export function AppShell() {
       refreshAll();
     });
 
+    // Import banner: ticks while main scans/imports, then holds the summary briefly before clearing.
+    let summaryTimer: ReturnType<typeof setTimeout> | null = null;
+    const cleanupImport = api.onImportProgress((status) => {
+      if (summaryTimer) { clearTimeout(summaryTimer); summaryTimer = null; }
+      useAppStore.getState().setImportStatus(status);
+      if (status.phase === 'done') {
+        summaryTimer = setTimeout(() => {
+          useAppStore.getState().setImportStatus(null);
+          summaryTimer = null;
+        }, 5000);
+      }
+    });
+
     return () => {
       document.removeEventListener('dragenter', handleDragEnter);
       document.removeEventListener('dragleave', handleDragLeave);
@@ -157,7 +170,9 @@ export function AppShell() {
       window.removeEventListener('dragend', handleWindowDragEnd);
       window.removeEventListener('blur', handleWindowBlur);
       if (watchdog) clearTimeout(watchdog);
+      if (summaryTimer) clearTimeout(summaryTimer);
       cleanup();
+      cleanupImport();
     };
   }, [refreshAll]);
 
@@ -189,7 +204,7 @@ export function AppShell() {
       {isDragging && (
         <div className="fixed inset-0 bg-blue-500/10 border-2 border-dashed border-blue-500 z-50 flex items-center justify-center pointer-events-none">
           <div className="bg-gray-900 px-6 py-4 rounded-xl border border-blue-500 shadow-2xl">
-            <p className="text-blue-400 text-sm font-medium">Drop images to import</p>
+            <p className="text-blue-400 text-sm font-medium">Drop images, folders, or zips to import</p>
           </div>
         </div>
       )}

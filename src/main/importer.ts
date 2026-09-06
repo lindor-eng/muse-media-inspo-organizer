@@ -1,10 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
 import { createImageRepo } from './database/repositories/images';
+import { createFolderRepo } from './database/repositories/folders';
 import { getLibraryPath } from './database/connection';
+import { MIME_TO_EXT, SUPPORTED_EXTENSIONS, VIDEO_EXTENSIONS, isSupported } from './image-formats';
+import { scanDropSources } from './import-scan';
+import { extractPoster, isVideoDecoderAvailable, probeDurationMs } from './video';
 
 export interface ImportResult {
   id: string;
@@ -17,34 +22,37 @@ export interface ImportResult {
   restored?: boolean;
 }
 
-const SUPPORTED_EXTENSIONS = new Set([
-  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.tiff', '.tif', '.bmp',
-]);
-
-/** MIME → extension fallback for buffer/URL imports where the source path is unreliable. */
-const MIME_TO_EXT: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/jpg': '.jpg',
-  'image/png': '.png',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-  'image/svg+xml': '.svg',
-  'image/tiff': '.tiff',
-  'image/bmp': '.bmp',
-};
-
-export function isSupported(filePath: string): boolean {
-  const ext = path.extname(filePath).toLowerCase();
-  return SUPPORTED_EXTENSIONS.has(ext);
+/** Outcome of one `importFiles` run — drives the progress banner and the library-import handoff. */
+export interface ImportSummary {
+  results: ImportResult[];
+  /** Images newly stored (or restored from Trash). */
+  imported: number;
+  /** Images already in the library, skipped by hash. */
+  duplicates: number;
+  failed: number;
+  /** Muse folders created to mirror dropped directory/zip structure. */
+  foldersCreated: number;
+  /** Dropped `.muse` bundles, handed back for the library-import flow. */
+  bundles: string[];
+  /** Dropped sources that held nothing importable. */
+  emptySources: string[];
 }
+
+export type ImportProgressFn = (p: { phase: 'scan' | 'import'; current: number; total: number }) => void;
 
 function hashBuffer(buffer: Buffer): string {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
-function computeHash(filePath: string): string {
-  const buffer = fs.readFileSync(filePath);
-  return hashBuffer(buffer);
+/**
+ * Streaming hash, so importing a file never depends on holding it in memory. Videos are the
+ * reason: a screen recording can be hundreds of megabytes, where reading the whole thing just
+ * to digest it would spike the main process for no benefit.
+ */
+async function hashFile(filePath: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  await pipeline(fs.createReadStream(filePath), hash);
+  return hash.digest('hex');
 }
 
 async function getImageDimensions(filePath: string): Promise<{ width: number; height: number } | null> {
@@ -59,18 +67,93 @@ async function getImageDimensions(filePath: string): Promise<{ width: number; he
   return null;
 }
 
+const THUMB_SIZE = 400;
+
 async function generateThumbnail(sourcePath: string, destPath: string): Promise<void> {
   await sharp(sourcePath)
-    .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
+    .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'inside', withoutEnlargement: true })
     .webp({ quality: 80 })
     .toFile(destPath);
 }
 
-/** Shared write path: persists buffer-on-disk, generates thumb, dedups, inserts row. */
+interface MediaMetadata {
+  width: number | null;
+  height: number | null;
+  /** Videos only. */
+  durationMs: number | null;
+  /** Whether a thumbnail was actually written to the path handed in. */
+  hasThumbnail: boolean;
+}
+
+/**
+ * A video's thumbnail is a poster frame pulled from the middle of the clip, and its stored
+ * dimensions are that frame's — the video's real display size, after ffmpeg has applied any
+ * rotation the container declares. Doing both from one decoded frame keeps import to a single
+ * ffmpeg pass plus the duration probe.
+ *
+ * Throws when the clip can't be decoded at all: unlike a still, a video with no poster has
+ * nothing to render in the grid, so it's better surfaced as a failed import than stored as an
+ * invisible row.
+ */
+async function describeVideo(sourcePath: string, thumbPath: string): Promise<MediaMetadata> {
+  if (!isVideoDecoderAvailable()) {
+    throw new Error('video decoder unavailable — run `npm run fetch:ffmpeg`');
+  }
+
+  const durationMs = await probeDurationMs(sourcePath);
+  const poster = await extractPoster(sourcePath, durationMs);
+
+  await sharp(poster.png)
+    .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 80 })
+    .toFile(thumbPath);
+
+  return {
+    width: poster.width || null,
+    height: poster.height || null,
+    durationMs,
+    hasThumbnail: true,
+  };
+}
+
+/** Thumbnail + dimensions for a still. Both are best-effort: SVGs and exotic formats fall
+    back to rendering the original directly. */
+async function describeImage(sourcePath: string, thumbPath: string): Promise<MediaMetadata> {
+  let hasThumbnail = false;
+  try {
+    await generateThumbnail(sourcePath, thumbPath);
+    hasThumbnail = true;
+  } catch {
+    // SVGs and exotic formats just use the original.
+  }
+
+  const dimensions = await getImageDimensions(sourcePath);
+  return {
+    width: dimensions?.width ?? null,
+    height: dimensions?.height ?? null,
+    durationMs: null,
+    hasThumbnail,
+  };
+}
+
+/**
+ * Where the bytes for an import come from. Path sources stream — hashed and copied without
+ * ever being held whole — while buffer sources (URL fetches, clipboard, data: URLs) already
+ * have the bytes in hand.
+ */
+type PersistSource =
+  | { kind: 'buffer'; buffer: Buffer }
+  | { kind: 'file'; path: string; size: number };
+
+/**
+ * Shared write path for every import: dedups by content hash, copies the bytes into the
+ * library, derives a thumbnail (a poster frame for videos, a resize for stills), and inserts
+ * the row.
+ */
 async function persistImage(
   db: Database.Database,
   args: {
-    buffer: Buffer;
+    source: PersistSource;
     /** Source-derived filename for display; not used for storage. */
     displayFilename: string;
     /** File extension (lower-case, with dot) used for the storage filename. */
@@ -81,9 +164,10 @@ async function persistImage(
     fileModifiedAt?: string | null;
   }
 ): Promise<ImportResult> {
-  const { buffer, displayFilename, ext, folderId, fileCreatedAt, fileModifiedAt } = args;
+  const { source, displayFilename, ext, folderId, fileCreatedAt, fileModifiedAt } = args;
 
-  const hash = hashBuffer(buffer);
+  const hash = source.kind === 'buffer' ? hashBuffer(source.buffer) : await hashFile(source.path);
+  const fileSize = source.kind === 'buffer' ? source.buffer.length : source.size;
   const imageRepo = createImageRepo(db);
   const existing = imageRepo.getByHash(hash);
 
@@ -111,35 +195,56 @@ async function persistImage(
   const destPath = path.join(libraryPath, 'originals', destFilename);
 
   if (!fs.existsSync(destPath)) {
-    fs.writeFileSync(destPath, buffer);
+    if (source.kind === 'buffer') {
+      fs.writeFileSync(destPath, source.buffer);
+    } else {
+      fs.copyFileSync(source.path, destPath);
+    }
   }
 
   const thumbFilename = `${hash}.webp`;
   const thumbPath = path.join(libraryPath, 'thumbnails', thumbFilename);
+  const isVideo = VIDEO_EXTENSIONS.has(ext);
 
+  let metadata: MediaMetadata;
   try {
-    await generateThumbnail(destPath, thumbPath);
-  } catch {
-    // SVGs and exotic formats just use the original.
+    metadata = isVideo
+      ? await describeVideo(destPath, thumbPath)
+      : await describeImage(destPath, thumbPath);
+  } catch (err) {
+    // Only videos reach here — describeImage swallows its own failures. Don't leave the
+    // original behind: with no poster there'd be nothing to show for it, and keeping the
+    // bytes would make a retry look like a duplicate and skip itself. The thumbnail goes too,
+    // in case the failure landed after a partial write.
+    fs.rmSync(destPath, { force: true });
+    fs.rmSync(thumbPath, { force: true });
+    console.error('[importer] video import failed for', displayFilename, err);
+    return {
+      id: '',
+      filename: displayFilename,
+      thumbnail_path: '',
+      success: false,
+      error: `Could not read video: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
-  const dimensions = await getImageDimensions(destPath);
   const fileType = ext.replace('.', '').toLowerCase();
   const titleBase = path.basename(displayFilename, path.extname(displayFilename)) || displayFilename;
 
   const image = imageRepo.create({
     filename: displayFilename,
     original_path: destPath,
-    thumbnail_path: fs.existsSync(thumbPath) ? thumbPath : null,
+    thumbnail_path: metadata.hasThumbnail && fs.existsSync(thumbPath) ? thumbPath : null,
     title: titleBase,
-    width: dimensions?.width ?? null,
-    height: dimensions?.height ?? null,
-    file_size: buffer.length,
+    width: metadata.width,
+    height: metadata.height,
+    file_size: fileSize,
     file_type: fileType,
     hash,
     folder_id: folderId,
     file_created_at: fileCreatedAt ?? null,
     file_modified_at: fileModifiedAt ?? null,
+    duration_ms: metadata.durationMs,
   });
 
   return { id: image.id, filename: displayFilename, thumbnail_path: thumbPath, success: true };
@@ -157,11 +262,10 @@ export async function importFile(
   }
 
   try {
-    const buffer = fs.readFileSync(filePath);
     const stats = fs.statSync(filePath);
     const ext = path.extname(filePath).toLowerCase();
     return await persistImage(db, {
-      buffer,
+      source: { kind: 'file', path: filePath, size: stats.size },
       displayFilename: filename,
       ext,
       folderId,
@@ -173,17 +277,102 @@ export async function importFile(
   }
 }
 
+function folderKey(parentId: string | null, name: string): string {
+  return `${parentId ?? 'root'}::${name.trim().toLowerCase()}`;
+}
+
+/**
+ * Mirrors a scanned source tree into Muse folders: each level is created on demand under the
+ * drop target, reusing a folder that already exists with that name and parent (matched
+ * case-insensitively, like the filesystem the paths came from). Folders that end up empty —
+ * every image under them turned out to be a duplicate, say — are pruned by `discardEmpty`.
+ */
+function createFolderMirror(db: Database.Database, rootFolderId: string | null) {
+  const folderRepo = createFolderRepo(db);
+  const idByKey = new Map<string, string>();
+  for (const folder of folderRepo.getAll()) {
+    idByKey.set(folderKey(folder.parent_id, folder.name), folder.id);
+  }
+
+  /** Created this run, parents before children — so reverse order prunes leaves first. */
+  const created: string[] = [];
+  const countImages = db.prepare('SELECT COUNT(*) AS n FROM images WHERE folder_id = ?');
+  const countChildren = db.prepare('SELECT COUNT(*) AS n FROM folders WHERE parent_id = ?');
+
+  return {
+    resolve(folderPath: string[]): string | null {
+      let parentId = rootFolderId;
+      for (const rawName of folderPath) {
+        const name = rawName.trim() || 'Untitled';
+        const key = folderKey(parentId, name);
+        let id = idByKey.get(key);
+        if (!id) {
+          id = folderRepo.create(name, parentId).id;
+          idByKey.set(key, id);
+          created.push(id);
+        }
+        parentId = id;
+      }
+      return parentId;
+    },
+
+    discardEmpty(): void {
+      for (const id of [...created].reverse()) {
+        const images = (countImages.get(id) as { n: number }).n;
+        const children = (countChildren.get(id) as { n: number }).n;
+        if (images === 0 && children === 0) {
+          folderRepo.delete(id);
+          created.splice(created.indexOf(id), 1);
+        }
+      }
+    },
+
+    get createdCount(): number {
+      return created.length;
+    },
+  };
+}
+
+/**
+ * The one entry point for path-based imports (drops and the file picker alike). Accepts loose
+ * files, folders, and zips; folders and zips are walked recursively and their structure is
+ * mirrored into Muse folders under `folderId`.
+ */
 export async function importFiles(
   db: Database.Database,
-  filePaths: string[],
-  folderId: string | null = null
-): Promise<ImportResult[]> {
+  sourcePaths: string[],
+  folderId: string | null = null,
+  onProgress?: ImportProgressFn,
+): Promise<ImportSummary> {
+  onProgress?.({ phase: 'scan', current: 0, total: 0 });
+  const scan = await scanDropSources(sourcePaths);
+  const mirror = createFolderMirror(db, folderId);
   const results: ImportResult[] = [];
-  for (const filePath of filePaths) {
-    const result = await importFile(db, filePath, folderId);
-    results.push(result);
+
+  try {
+    const total = scan.images.length;
+    onProgress?.({ phase: 'import', current: 0, total });
+
+    for (const image of scan.images) {
+      const target = image.folderPath.length > 0 ? mirror.resolve(image.folderPath) : folderId;
+      results.push(await importFile(db, image.path, target));
+      onProgress?.({ phase: 'import', current: results.length, total });
+    }
+  } finally {
+    // Zip temp dirs are only needed until the bytes are copied into the library.
+    scan.cleanup();
+    mirror.discardEmpty();
   }
-  return results;
+
+  return {
+    results,
+    imported: results.filter((r) => r.success).length,
+    duplicates: results.filter((r) => r.duplicate).length,
+    failed: results.filter((r) => !r.success && !r.duplicate).length,
+    foldersCreated: mirror.createdCount,
+    bundles: scan.bundles,
+    emptySources: scan.emptySources,
+  };
 }
 
 /** Best-effort filename inference from a URL — falls back to "image" if the path has none. */
@@ -225,7 +414,7 @@ export async function importFromUrl(
       const buffer = isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf-8');
       const ext = MIME_TO_EXT[mime.toLowerCase()] ?? '.png';
       return await persistImage(db, {
-        buffer,
+        source: { kind: 'buffer', buffer },
         displayFilename: `clipboard${ext}`,
         ext,
         folderId,
@@ -249,7 +438,7 @@ export async function importFromUrl(
 
     const filename = deriveFilenameFromUrl(trimmed, ext);
     return await persistImage(db, {
-      buffer,
+      source: { kind: 'buffer', buffer },
       displayFilename: filename,
       ext,
       folderId,
@@ -269,7 +458,7 @@ export async function importFromBuffer(
   const ext = SUPPORTED_EXTENSIONS.has(extFromName) ? extFromName : '.png';
   const safeName = extFromName ? filename : `${filename}${ext}`;
   return persistImage(db, {
-    buffer,
+    source: { kind: 'buffer', buffer },
     displayFilename: safeName,
     ext,
     folderId,

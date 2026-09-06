@@ -58,7 +58,7 @@ function buildAppMenu(): void {
       label: 'File',
       submenu: [
         {
-          label: 'Import Files…',
+          label: 'Import Files or Folders…',
           accelerator: 'CmdOrCtrl+O',
           click: sendToRenderer('menu:importFiles'),
         },
@@ -78,6 +78,10 @@ function buildAppMenu(): void {
 }
 
 app.on('ready', async () => {
+  // Stills only. Video is loaded straight from `file://` in the renderer — Chromium refuses to
+  // issue follow-up range requests to a custom protocol handler, so a clip served through
+  // `local-file` loads its first chunk and then fails with MEDIA_ERR_SRC_NOT_SUPPORTED the
+  // moment the demuxer needs the moov atom at the end of the file. See ImageFocus.
   protocol.handle('local-file', (request) => {
     const filePath = decodeURIComponent(request.url.replace('local-file://', ''));
     return net.fetch(`file://${filePath}`);
@@ -180,9 +184,17 @@ ipcMain.on('files-imported', (event) => {
 
 ipcMain.handle('dialog:openFiles', async () => {
   const result = await dialog.showOpenDialog({
-    properties: ['openFile', 'multiSelections'],
+    // Folders and zips are expanded by the importer, so the picker offers the same reach as a drop.
+    properties: ['openFile', 'openDirectory', 'multiSelections'],
     filters: [
-      { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'tiff', 'tif', 'bmp'] },
+      {
+        name: 'Media & Archives',
+        extensions: [
+          'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'tiff', 'tif', 'bmp',
+          'mp4', 'mov', 'm4v',
+          'zip',
+        ],
+      },
     ],
   });
   return result.filePaths;

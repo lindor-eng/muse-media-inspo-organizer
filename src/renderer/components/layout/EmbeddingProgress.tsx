@@ -10,7 +10,7 @@ interface ProgressState {
 }
 
 const AUTO_TAG_MESSAGES = [
-  'Analyzing your images...',
+  'Analyzing your items...',
   'Generating descriptions & tags...',
   'Teaching AI about your collection...',
   'Looking at the details...',
@@ -126,8 +126,8 @@ export function EmbeddingProgress() {
           </div>
           <p className="text-xs text-gray-500 mt-1.5">
             {isDone
-              ? `${progress.total} images processed`
-              : `${remaining} image${remaining === 1 ? '' : 's'} remaining`
+              ? `${progress.total} items processed`
+              : `${remaining} item${remaining === 1 ? '' : 's'} remaining`
             }
           </p>
         </div>

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download, Check, Loader2, ArrowUpCircle, AlertTriangle, RefreshCw, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Check, Loader2, ArrowUpCircle, AlertTriangle, RefreshCw, X, ChevronDown } from 'lucide-react';
 import { api } from '../../lib/ipc';
+import { summarizeReleaseNotes } from '../../lib/release-notes';
 
 interface UpdateInfo {
   version: string;
@@ -80,6 +81,14 @@ export function UpdateDialog() {
   const pkgPath = useRef<string | null>(null);
   /** Guards against overlapping manual checks (re-clicking the menu mid-check). */
   const busy = useRef(false);
+  /** The dialog opens on the headlines; the full release body is one click away. */
+  const [showAllNotes, setShowAllNotes] = useState(false);
+
+  const highlights = useMemo(() => summarizeReleaseNotes(info?.notes ?? ''), [info?.notes]);
+  const hasSummary = Boolean(highlights.warning) || highlights.items.length > 0;
+
+  // A newer release arriving (or a re-check) starts the notes collapsed again.
+  useEffect(() => setShowAllNotes(false), [info?.version]);
 
   // Manual "Check for Updates…" — surfaces every outcome, including up-to-date and errors.
   const runManualCheck = useCallback(async () => {
@@ -243,9 +252,50 @@ export function UpdateDialog() {
               {info.size ? <span className="text-gray-600"> · {formatSize(info.size)}</span> : null}
             </p>
             <p className="text-xs text-gray-600 mb-4">You&apos;re on {info.currentVersion}.</p>
-            <div className="max-h-48 overflow-y-auto rounded-lg bg-gray-950/60 border border-gray-800 p-3 mb-5">
-              <Changelog notes={info.notes} />
-            </div>
+
+            {highlights.warning && (
+              <div className="flex items-start gap-2 mb-4 px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                <AlertTriangle size={15} className="text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-amber-200 leading-snug">{highlights.warning}</p>
+              </div>
+            )}
+
+            {highlights.items.length > 0 && (
+              <ul className="mb-3 space-y-1.5">
+                {highlights.items.map((item) => (
+                  <li key={item} className="flex gap-2 text-sm text-gray-300 leading-snug">
+                    <span className="text-purple-400 shrink-0">•</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* Notes we couldn't summarize (or an empty body) fall back to the full render, so the
+                dialog never shows less than it knows. */}
+            {hasSummary ? (
+              <button
+                onClick={() => setShowAllNotes((v) => !v)}
+                className="flex items-center gap-1 mb-4 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <ChevronDown
+                  size={12}
+                  className={`transition-transform ${showAllNotes ? 'rotate-180' : ''}`}
+                />
+                {showAllNotes
+                  ? 'Hide full notes'
+                  : highlights.more > 0
+                    ? `Full notes (+${highlights.more} more)`
+                    : 'Full notes'}
+              </button>
+            ) : null}
+
+            {(showAllNotes || !hasSummary) && (
+              <div className="max-h-48 overflow-y-auto rounded-lg bg-gray-950/60 border border-gray-800 p-3 mb-5">
+                <Changelog notes={info.notes} />
+              </div>
+            )}
+
             <button
               onClick={handleUpdate}
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors text-sm font-medium"

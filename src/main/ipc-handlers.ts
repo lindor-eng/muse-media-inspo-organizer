@@ -14,6 +14,8 @@ import {
   generateAndStoreEmbedding,
 } from './ai/natural-search';
 import { parseSimilarRefineModes } from '../shared/similar-refine';
+import type { ImportStatus } from '../shared/import-status';
+import { isVideoFileType } from '../shared/media-type';
 import {
   loadSimilarityPrefs,
   saveSimilarityPrefs,
@@ -99,32 +101,124 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
   // Import
   // Singleton AI pipeline so concurrent imports never run vision jobs in parallel.
   // New images enqueued mid-run extend the in-flight totals instead of starting a second drainer.
-  const aiQueue: string[] = [];
+  //
+  // Two lanes, one drainer. The `user` lane is work someone asked for — an import, a
+  // re-analyze — and it is the only work the progress toast counts. The `background` lane is
+  // work the app decided to do on its own: the launch-time caption upgrade, which re-queues
+  // any row still below CAPTIONS_VERSION on every launch until it succeeds. Mixing the two
+  // into one total made the toast lie about imports — drop two clips while two stale ones are
+  // still pending and it read "4 items remaining" for a 2-file import. Video made this
+  // visible: a clip takes ~20-25s to caption against ~7s for a still, so the lanes now
+  // routinely overlap where they used to pass each other unnoticed.
+  type Lane = 'user' | 'background';
+
+  const queues: Record<Lane, string[]> = { user: [], background: [] };
+  /** Counted per lane, so background work can never inflate the number an import reports. */
+  const lanes: Record<Lane, { total: number; completed: number }> = {
+    user: { total: 0, completed: 0 },
+    background: { total: 0, completed: 0 },
+  };
   /** Ids queued for a caption *refresh* (model/prompt upgrade or explicit re-analyze):
       stale auto-tags and the model-written description get replaced, not accumulated. */
   const aiRefreshIds = new Set<string>();
-  let aiTotal = 0;
-  let aiCompleted = 0;
+  /** The job the drainer is on right now. Pending-only dedupe would miss it. */
+  let aiInFlight: { id: string; lane: Lane } | null = null;
   let aiDraining = false;
+
+  /**
+   * Which lane the toast speaks for. User work owns the readout for as long as any exists —
+   * including after it finishes, so the run can announce its own completion and dismiss
+   * itself rather than handing the toast straight to the background sweep. Counters reset
+   * together once the whole pipeline drains, so a later background-only sweep still shows.
+   */
+  function reportingLane(): Lane {
+    return lanes.user.total > 0 ? 'user' : 'background';
+  }
+
+  /** "Analyzing item 3 of 7..." for whichever lane currently owns the readout. */
+  function progressStatus(kind: 'autotag' | 'embedding'): string {
+    const lane = reportingLane();
+    const { completed, total } = lanes[lane];
+    const n = Math.min(completed + 1, total);
+    if (lane === 'background') return `Upgrading captions ${n} of ${total}...`;
+    return kind === 'autotag' ? `Analyzing item ${n} of ${total}...` : `Indexing item ${n} of ${total}...`;
+  }
+
+  function completionStatus(kind: 'autotag' | 'embedding'): string {
+    const { completed, total } = lanes[reportingLane()];
+    if (completed >= total) return kind === 'autotag' ? 'Auto-tagging complete' : 'Indexing complete';
+    return kind === 'autotag' ? `Analyzed ${completed} of ${total}` : `Indexed ${completed} of ${total}`;
+  }
 
   function broadcastAutotag(status: string): void {
     const win = BrowserWindow.getAllWindows()[0];
-    win?.webContents.send('autotag:progress', { current: aiCompleted, total: aiTotal, status });
+    const { completed, total } = lanes[reportingLane()];
+    win?.webContents.send('autotag:progress', { current: completed, total, status });
   }
 
   function broadcastEmbedding(status: string): void {
     const win = BrowserWindow.getAllWindows()[0];
-    win?.webContents.send('embedding:progress', { current: aiCompleted, total: aiTotal, status });
+    const { completed, total } = lanes[reportingLane()];
+    win?.webContents.send('embedding:progress', { current: completed, total, status });
+  }
+
+  /**
+   * Adds ids to a lane, skipping anything already pending so one image can't cost two vision
+   * passes. An id waiting in the background lane is *promoted* rather than duplicated: the
+   * user asking for it outranks the sweep that was going to get to it eventually.
+   *
+   * Returns how many were actually queued.
+   */
+  function enqueueAi(ids: string[], lane: Lane, options?: { refresh?: boolean }): number {
+    const added: string[] = [];
+
+    for (const id of ids) {
+      if (queues[lane].includes(id)) continue;
+
+      if (lane === 'user') {
+        const pending = queues.background.indexOf(id);
+        if (pending !== -1) {
+          queues.background.splice(pending, 1);
+          lanes.background.total -= 1;
+        }
+      } else if (queues.user.includes(id) || aiInFlight?.id === id) {
+        // Background work never duplicates something already queued or already running. The
+        // user lane deliberately doesn't take this branch: asking to re-analyze an image
+        // that happens to be mid-pass means you want a fresh one afterwards.
+        continue;
+      }
+
+      if (options?.refresh) aiRefreshIds.add(id);
+      added.push(id);
+    }
+
+    if (added.length === 0) return 0;
+
+    queues[lane].push(...added);
+    lanes[lane].total += added.length;
+    return added.length;
+  }
+
+  /** User work first, always — the counter the toast is showing has to keep moving. */
+  function nextJob(): { id: string; lane: Lane } | null {
+    const userId = queues.user.shift();
+    if (userId !== undefined) return { id: userId, lane: 'user' };
+    const backgroundId = queues.background.shift();
+    if (backgroundId !== undefined) return { id: backgroundId, lane: 'background' };
+    return null;
   }
 
   async function drainAiQueue(): Promise<void> {
     if (aiDraining) return;
     aiDraining = true;
     try {
-      while (aiQueue.length > 0) {
-        const id = aiQueue.shift()!;
-        const idx = aiCompleted + 1;
-        broadcastAutotag(`Analyzing image ${idx} of ${aiTotal}...`);
+      for (let job = nextJob(); job !== null; job = nextJob()) {
+        const { id, lane } = job;
+        aiInFlight = job;
+        // A job only narrates while its own lane owns the readout. Without this, a background
+        // job picked up after an import finished would overwrite "Auto-tagging complete" with
+        // a stale count and keep re-arming the toast's dismiss timer for the rest of the sweep.
+        if (lane === reportingLane()) broadcastAutotag(progressStatus('autotag'));
         try {
           await autoTagImage(db, id, { refresh: aiRefreshIds.has(id) });
         } catch (err) {
@@ -133,10 +227,16 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
           aiRefreshIds.delete(id);
         }
 
-        broadcastEmbedding(`Indexing image ${idx} of ${aiTotal}...`);
+        if (lane === reportingLane()) broadcastEmbedding(progressStatus('embedding'));
         const img = imageRepo.getById(id);
         if (img) {
-          await generateAndStoreEmbedding(db, id, img.original_path).catch((err) =>
+          // The perceptual hash inside this call goes through sharp, which can't open a video
+          // container — a video is hashed from its poster frame instead, which is the same
+          // pixels the grid and the similarity strip compare against anyway.
+          const hashSource = isVideoFileType(img.file_type)
+            ? img.thumbnail_path ?? img.original_path
+            : img.original_path;
+          await generateAndStoreEmbedding(db, id, hashSource).catch((err) =>
             console.warn('[ai-queue] embed failed:', err),
           );
           if (img.thumbnail_path) {
@@ -146,16 +246,21 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
           }
         }
 
-        aiCompleted++;
-        broadcastAutotag(aiCompleted >= aiTotal ? 'Auto-tagging complete' : `Analyzed ${aiCompleted} of ${aiTotal}`);
-        broadcastEmbedding(aiCompleted >= aiTotal ? 'Indexing complete' : `Indexed ${aiCompleted} of ${aiTotal}`);
+        lanes[lane].completed += 1;
+
+        if (lane === reportingLane()) {
+          broadcastAutotag(completionStatus('autotag'));
+          broadcastEmbedding(completionStatus('embedding'));
+        }
       }
     } finally {
+      aiInFlight = null;
       aiDraining = false;
-      // Reset counters once the queue fully drains so the next batch starts fresh at 0/N.
-      if (aiQueue.length === 0) {
-        aiTotal = 0;
-        aiCompleted = 0;
+      // Reset once the whole pipeline drains so the next batch starts fresh at 0/N — and so a
+      // background-only sweep can take the readout back.
+      if (queues.user.length === 0 && queues.background.length === 0) {
+        lanes.user = { total: 0, completed: 0 };
+        lanes.background = { total: 0, completed: 0 };
       }
     }
   }
@@ -178,10 +283,9 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
     const successfulIds = fresh.map((r) => r.id);
     if (successfulIds.length === 0) return;
 
-    aiQueue.push(...successfulIds);
-    aiTotal += successfulIds.length;
+    if (enqueueAi(successfulIds, 'user') === 0) return;
     // Surface the new total immediately so the toast ticks up before the worker reaches the new item.
-    broadcastAutotag(`Analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+    broadcastAutotag(progressStatus('autotag'));
 
     if (!aiDraining) {
       setTimeout(() => {
@@ -190,11 +294,39 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
     }
   }
 
+  function broadcastImport(status: ImportStatus): void {
+    const win = BrowserWindow.getAllWindows()[0];
+    win?.webContents.send('import:progress', status);
+  }
+
   ipcMain.handle('import:files', async (_, filePaths: string[], folderId: string | null) => {
     console.log('[import:files] called with paths:', filePaths);
-    const results = await importFiles(db, filePaths, folderId);
-    await enrichImportResults(results);
-    return results;
+    const summary = await importFiles(db, filePaths, folderId, broadcastImport);
+
+    // A drop that was nothing but .muse bundles has its own dialog to speak for it — a
+    // "nothing to import" banner alongside it would just be noise.
+    const bundlesOnly =
+      summary.bundles.length > 0 && summary.results.length === 0 && summary.emptySources.length === 0;
+    if (!bundlesOnly) {
+      broadcastImport({
+        phase: 'done',
+        imported: summary.imported,
+        duplicates: summary.duplicates,
+        failed: summary.failed,
+        foldersCreated: summary.foldersCreated,
+        emptySources: summary.emptySources.length,
+      });
+    }
+
+    // A dropped .muse bundle isn't a pile of loose images — send it to the library-import
+    // dialog so its folders, tags, and captions survive the trip.
+    if (summary.bundles.length > 0) {
+      const win = BrowserWindow.getAllWindows()[0];
+      win?.webContents.send('library:import:dropped', summary.bundles[0]);
+    }
+
+    await enrichImportResults(summary.results);
+    return summary;
   });
 
   ipcMain.handle('import:url', async (_, url: string, folderId: string | null) => {
@@ -222,22 +354,20 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
 
     // Re-analysis shares the singleton queue; we capture our slice's "done" target so the
     // renderer can await fresh metadata before it refreshes the detail panel.
-    const myTarget = aiCompleted + (aiQueue.length + imageIds.length);
-    for (const id of imageIds) aiRefreshIds.add(id);
-    aiQueue.push(...imageIds);
-    aiTotal += imageIds.length;
-    broadcastAutotag(`Re-analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+    const queued = enqueueAi(imageIds, 'user', { refresh: true });
+    const myTarget = lanes.user.completed + queues.user.length;
+    if (queued > 0) broadcastAutotag(progressStatus('autotag'));
 
     if (!aiDraining) {
       void drainAiQueue();
     }
 
-    while (aiCompleted < myTarget) {
+    while (lanes.user.completed < myTarget) {
       await new Promise<void>((resolve) => setTimeout(resolve, 150));
-      // aiCompleted resets to 0 when the queue fully drains. If our target was already passed
-      // before the reset, the loop above already exited; if not, the reset means everything queued
-      // up to and including our slice is done.
-      if (!aiDraining && aiQueue.length === 0) break;
+      // The user lane's counters reset to 0 when the whole pipeline drains. If our target was
+      // already passed before the reset, the loop above already exited; if not, the reset means
+      // everything queued up to and including our slice is done.
+      if (!aiDraining && queues.user.length === 0) break;
     }
 
     return { processed: imageIds.length, total: imageIds.length };
@@ -257,10 +387,8 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
       .all() as Array<{ id: string }>;
     if (rows.length === 0) return { queued: 0 };
 
-    for (const { id } of rows) aiRefreshIds.add(id);
-    aiQueue.push(...rows.map((r) => r.id));
-    aiTotal += rows.length;
-    broadcastAutotag(`Re-analyzing image ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+    const queued = enqueueAi(rows.map((r) => r.id), 'user', { refresh: true });
+    if (queued > 0) broadcastAutotag(progressStatus('autotag'));
     if (!aiDraining) void drainAiQueue();
     return { queued: rows.length };
   });
@@ -388,12 +516,14 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
         .all(CAPTIONS_VERSION) as Array<{ id: string }>;
       if (stale.length === 0) return 0;
 
-      for (const { id } of stale) aiRefreshIds.add(id);
-      aiQueue.push(...stale.map((s) => s.id));
-      aiTotal += stale.length;
-      broadcastAutotag(`Upgrading captions ${Math.min(aiCompleted + 1, aiTotal)} of ${aiTotal}...`);
+      // Background lane: this runs because the app decided to, not because anyone asked, so it
+      // stays out of the count an import reports. It still shows its own progress when nothing
+      // else is competing for the toast.
+      const queued = enqueueAi(stale.map((s) => s.id), 'background', { refresh: true });
+      if (queued === 0) return 0;
+      broadcastAutotag(progressStatus('autotag'));
       if (!aiDraining) void drainAiQueue();
-      return stale.length;
+      return queued;
     },
   };
 }

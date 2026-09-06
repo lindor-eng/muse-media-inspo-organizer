@@ -96,8 +96,9 @@ out/
 data/
 *.db
 
-# Bundled binaries — fetched at build time by scripts/fetch-ollama.mjs
+# Bundled binaries — fetched at build time by scripts/fetch-ollama.mjs and fetch-ffmpeg.mjs
 resources/ollama
+resources/ffmpeg
 
-# Download cache for the bundled engine tarball
+# Download cache for the bundled engine/decoder archives
 .cache/

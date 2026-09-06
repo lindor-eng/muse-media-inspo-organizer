@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { MatchStrengthTier } from '../../shared/visual-similarity';
 import { MATCH_STRENGTH_TO_MIN_COSINE } from '../../shared/visual-similarity';
 import type { SimilarRefineMode } from '../../shared/similar-refine';
+import type { ImportStatus } from '../../shared/import-status';
 import { api } from '../lib/ipc';
 
 export type { MatchStrengthTier };
@@ -116,6 +117,8 @@ export interface ImageRecord {
   height: number | null;
   file_size: number | null;
   file_type: string | null;
+  /** Clip length in ms for videos; null for stills. */
+  duration_ms: number | null;
   is_trashed: number;
   folder_id: string | null;
   imported_at: string;
@@ -175,7 +178,8 @@ interface AppState {
 
   // UI
   theme: 'light' | 'dark';
-  isImporting: boolean;
+  /** Live import banner state, fed by `import:progress` from main. Null when idle. */
+  importStatus: ImportStatus | null;
   /** Whether the "AI moodboard / new folder" modal is open (triggered by the sidebar + button). */
   moodboardModalOpen: boolean;
   searchQuery: string;
@@ -231,6 +235,7 @@ interface AppState {
   saveSimilarityPrefsAndRefresh: (prefs: Partial<SimilarityPrefs>) => Promise<void>;
 
   importFiles: (filePaths: string[]) => Promise<void>;
+  setImportStatus: (status: ImportStatus | null) => void;
   setMoodboardModalOpen: (open: boolean) => void;
   createFolder: (name: string, parentId?: string | null) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
@@ -257,7 +262,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   totalImages: 0,
   counts: { total: 0, uncategorized: 0, untagged: 0, trashed: 0 },
   theme: 'dark',
-  isImporting: false,
+  importStatus: null,
   moodboardModalOpen: false,
   detailRefreshNonce: 0,
   searchQuery: '',
@@ -598,13 +603,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     void get().fetchSimilarImages(get().selectedImageId);
   },
 
+  // Progress and the completion summary arrive on `import:progress` (see AppShell) — folders and
+  // zips make an import long enough that the banner has to be event-driven, not awaited here.
   importFiles: async (filePaths) => {
-    set({ isImporting: true });
     const folderId = get().selectedFolderId;
     await api.importFiles(filePaths, folderId);
-    set({ isImporting: false });
     await get().refreshAll();
   },
+
+  setImportStatus: (status) => set({ importStatus: status }),
 
   setMoodboardModalOpen: (open) => set({ moodboardModalOpen: open }),
 

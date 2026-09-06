@@ -3,6 +3,7 @@ import os from 'node:os';
 
 import type { SimilarRefineMode } from '../shared/similar-refine';
 import type { OllamaStartResult } from '../shared/ollama-status';
+import type { ImportStatus } from '../shared/import-status';
 
 /** Update metadata surfaced to the renderer — mirrors UpdateInfo in main/updater.ts. Declared
     locally so the preload bundle never imports the main process (which pulls in electron's app). */
@@ -146,6 +147,20 @@ const api = {
   onFilesImported: (callback: () => void) => {
     ipcRenderer.on('files-imported', callback);
     return () => ipcRenderer.removeListener('files-imported', callback);
+  },
+
+  /** Scan → per-image → summary ticks for path imports (drops and the file picker). */
+  onImportProgress: (callback: (status: ImportStatus) => void) => {
+    const handler = (_: unknown, status: ImportStatus) => callback(status);
+    ipcRenderer.on('import:progress', handler);
+    return () => { ipcRenderer.removeListener('import:progress', handler); };
+  },
+
+  /** A dropped `.muse` bundle, routed here instead of through the image importer. */
+  onLibraryImportDropped: (callback: (zipPath: string) => void) => {
+    const handler = (_: unknown, zipPath: string) => callback(zipPath);
+    ipcRenderer.on('library:import:dropped', handler);
+    return () => { ipcRenderer.removeListener('library:import:dropped', handler); };
   },
 
   // Clipboard

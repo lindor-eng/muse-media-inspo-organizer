@@ -54,6 +54,14 @@ export function LibraryImportDialog() {
     return cleanup;
   }, []);
 
+  // A .muse bundle dropped onto the window lands here instead of the image importer.
+  useEffect(() => {
+    const cleanup = api.onLibraryImportDropped((zipPath) => {
+      void start(zipPath);
+    });
+    return cleanup;
+  }, []);
+
   // Subscribe to import progress for apply-phase ticks (extract/inspect ticks come through too
   // but the dialog already shows its own "Inspecting…" copy during that brief window).
   useEffect(() => {
@@ -65,11 +73,12 @@ export function LibraryImportDialog() {
     return cleanup;
   }, []);
 
-  async function start() {
+  /** `droppedPath` skips the file picker — the bundle already arrived by drop. */
+  async function start(droppedPath?: string) {
     if (stageRef.current.kind !== 'idle' && stageRef.current.kind !== 'done' && stageRef.current.kind !== 'error') {
       return;
     }
-    const filePath = await api.chooseOpenLibraryBundle();
+    const filePath = droppedPath ?? (await api.chooseOpenLibraryBundle());
     if (!filePath) return;
     setStage({ kind: 'inspecting' });
     setApplyToRest(false);

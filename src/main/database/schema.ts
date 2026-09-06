@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS images (
     imported_at     TEXT DEFAULT (datetime('now')),
     file_created_at TEXT,
     file_modified_at TEXT,
+    duration_ms     INTEGER,
     indexed_chromatic INTEGER,
     indexed_hue_bucket INTEGER,
     indexed_hue_strength REAL,
@@ -205,6 +206,9 @@ const MIGRATIONS = [
   // 1 = LLaVA-era, 2 = Qwen3-VL + enriched design prompt. Rows below the current
   // version get re-analyzed by the startup migration in ipc-handlers.
   `ALTER TABLE images ADD COLUMN captions_version INTEGER DEFAULT 1`,
+  // Clip length for video rows, in milliseconds. NULL for stills and for videos whose
+  // container declares no duration — `formatDuration` renders nothing rather than "0:00".
+  `ALTER TABLE images ADD COLUMN duration_ms INTEGER`,
 ];
 
 export function runMigrations(db: Database.Database): void {

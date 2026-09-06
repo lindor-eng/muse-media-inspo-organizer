@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { X, Trash2, RotateCcw, Plus, Pencil } from 'lucide-react';
 import { useAppStore, type ImageRecord, type ImageColor } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
+import { formatDuration } from '../../../shared/media-type';
 
 interface TagWithMeta {
   id: string;
@@ -281,6 +282,12 @@ export function DetailPanel() {
               <div className="flex justify-between text-gray-400">
                 <span>Dimensions</span>
                 <span className="text-gray-300">{displayImage.width} x {displayImage.height}</span>
+              </div>
+            )}
+            {formatDuration(displayImage.duration_ms) && (
+              <div className="flex justify-between text-gray-400">
+                <span>Duration</span>
+                <span className="text-gray-300">{formatDuration(displayImage.duration_ms)}</span>
               </div>
             )}
             <div className="flex justify-between text-gray-400">

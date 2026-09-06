@@ -63,6 +63,8 @@ interface IncomingImage {
   imported_at: string;
   file_created_at: string | null;
   file_modified_at: string | null;
+  /** Clip length for video rows; null for stills. Older bundles predate the column. */
+  duration_ms: number | null;
   indexed_chromatic: number | null;
   indexed_hue_bucket: number | null;
   indexed_hue_strength: number | null;
@@ -297,17 +299,17 @@ export async function applyImport(
           id, filename, original_path, thumbnail_path, title, notes, alt_text, source_url,
           width, height, file_size, file_type, hash,
           is_trashed, trashed_at, folder_id,
-          imported_at, file_created_at, file_modified_at,
+          imported_at, file_created_at, file_modified_at, duration_ms,
           indexed_chromatic, indexed_hue_bucket, indexed_hue_strength, indexed_hue_degrees,
           indexed_hue_bucket_2, indexed_hue_strength_2, phash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const updateImage = liveDb.prepare(`
         UPDATE images SET
           filename = ?, original_path = ?, thumbnail_path = ?, title = ?, notes = ?,
           alt_text = ?, source_url = ?, width = ?, height = ?, file_size = ?, file_type = ?,
           is_trashed = ?, trashed_at = ?, folder_id = ?, file_created_at = ?, file_modified_at = ?,
-          indexed_chromatic = ?, indexed_hue_bucket = ?, indexed_hue_strength = ?, indexed_hue_degrees = ?,
+          duration_ms = ?, indexed_chromatic = ?, indexed_hue_bucket = ?, indexed_hue_strength = ?, indexed_hue_degrees = ?,
           indexed_hue_bucket_2 = ?, indexed_hue_strength_2 = ?, phash = ?, updated_at = datetime('now')
         WHERE id = ?
       `);
@@ -370,6 +372,9 @@ export async function applyImport(
             incoming.imported_at,
             incoming.file_created_at,
             incoming.file_modified_at,
+            // Bundles written before video support carry no such column; SELECT * yields
+            // undefined, which better-sqlite3 refuses to bind.
+            incoming.duration_ms ?? null,
             incoming.indexed_chromatic,
             incoming.indexed_hue_bucket,
             incoming.indexed_hue_strength,
@@ -397,6 +402,7 @@ export async function applyImport(
             incoming.folder_id,
             incoming.file_created_at,
             incoming.file_modified_at,
+            incoming.duration_ms ?? null,
             incoming.indexed_chromatic,
             incoming.indexed_hue_bucket,
             incoming.indexed_hue_strength,

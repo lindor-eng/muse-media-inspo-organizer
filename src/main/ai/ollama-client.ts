@@ -211,7 +211,7 @@ export async function scoreImageFit(
   exclusions: string[],
 ): Promise<number | null> {
   try {
-    const base64Image = await getImageAsBase64(imagePath);
+    const base64Image = await toBase64(imagePath);
     const excludeLine = exclusions.length > 0 ? `\nMust NOT contain: ${exclusions.join(', ')}` : '';
     const res = await fetch(`${getBaseUrl()}/api/generate`, {
       method: 'POST',
@@ -278,12 +278,24 @@ export async function describeImage(imagePath: string): Promise<string> {
   return result.description + '\nTags: ' + result.tags.join(', ');
 }
 
-async function getImageAsBase64(imagePath: string): Promise<string> {
+/**
+ * 1024px: Qwen3-VL's dynamic-resolution encoder actually uses the extra pixels to read UI text
+ * and small type that were illegible at 768.
+ */
+const VISION_MAX_DIM = 1024;
+
+/**
+ * A video contact sheet carries six frames in one image, so each cell only gets a third of the
+ * width. Sending the sheet at 1536 keeps every cell at ~512px — roughly the detail a 2x2 grid
+ * would get at the still budget — which is what makes on-screen text in a screen recording
+ * still readable to the model.
+ */
+const VISION_SHEET_MAX_DIM = 1536;
+
+async function toBase64(image: string | Buffer, maxDim = VISION_MAX_DIM): Promise<string> {
   // Always convert through sharp to ensure compatible format and reasonable size.
-  // 1024px: Qwen3-VL's dynamic-resolution encoder actually uses the extra pixels
-  // to read UI text and small type that were illegible at 768.
-  const buffer = await sharp(imagePath)
-    .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+  const buffer = await sharp(image)
+    .resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true })
     .png()
     .toBuffer();
   return buffer.toString('base64');
@@ -291,7 +303,7 @@ async function getImageAsBase64(imagePath: string): Promise<string> {
 
 export async function analyzeImage(imagePath: string): Promise<ImageAnalysis> {
   console.log('[ollama] analyzeImage:', imagePath);
-  const base64Image = await getImageAsBase64(imagePath);
+  const base64Image = await toBase64(imagePath);
   console.log('[ollama] base64 length:', base64Image.length);
 
   const res = await fetch(`${getBaseUrl()}/api/generate`, {
@@ -317,6 +329,57 @@ Tags: [8-14 comma-separated keyword tags covering subject, medium, style movemen
   console.log('[ollama] raw response:', data.response);
   const parsed = parseAnalysis(data.response);
   console.log('[ollama] parsed:', { altLen: parsed.altText.length, descLen: parsed.description.length, tagCount: parsed.tags.length });
+  return parsed;
+}
+
+/**
+ * Captions a video from a contact sheet of frames sampled across its duration.
+ *
+ * The prompt spends most of its effort on one problem: the model is looking at a grid, and
+ * left alone it will describe the grid ("a six-panel collage…"), which is useless as alt text
+ * for the clip. So the frames are named as a filmstrip, the grid is explicitly ruled out of
+ * the output, and the alt line is asked for in the present tense a screen reader user expects.
+ * What the extra frames buy over a single poster is change over time — a caption that says
+ * what happens, not just what the first frame looked like.
+ */
+export async function analyzeVideo(
+  sheet: Buffer,
+  info: { durationLabel: string | null; frameCount: number },
+): Promise<ImageAnalysis> {
+  const base64Sheet = await toBase64(sheet, VISION_SHEET_MAX_DIM);
+  const lengthNote = info.durationLabel ? ` The clip runs ${info.durationLabel}.` : '';
+
+  const res = await fetch(`${getBaseUrl()}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      prompt: `This image is a filmstrip: ${info.frameCount} frames taken from a single video at even intervals, in chronological order, reading left to right then top to bottom.${lengthNote}
+
+Describe THE VIDEO, not the filmstrip. Never mention frames, panels, grids, collages, stills, or the layout of this image. Treat what changes between frames as motion within one continuous clip, and what stays the same as the scene it holds throughout.
+
+Respond in exactly this format, with each field on its own line:
+Alt: [1-2 sentences describing the video for a screen reader user, under 200 characters. Present tense. Say what is shown and what happens — the subject, the setting, and the main action or change across the clip. No "video of" or "clip showing" preamble; describe it directly.]
+Description: [3-4 sentences for design search. Name the medium (screen recording, UI prototype, motion graphic, live-action footage, 3D animation, title sequence). Quote prominent on-screen text verbatim. Describe what moves and how (camera move, cut, transition, UI interaction, looping animation), plus typography, layout, color palette with specific hues, lighting, texture, and any era or style influence.]
+Tags: [8-14 comma-separated keyword tags covering subject, medium, motion technique, style movement, mood, dominant colors, and typography traits]`,
+      images: [base64Sheet],
+      stream: false,
+      options: { temperature: 0.3, num_ctx: 4096 },
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Ollama error: ${res.status} ${await res.text()}`);
+  }
+
+  const data: OllamaGenerateResponse = await res.json();
+  console.log('[ollama] raw video response:', data.response);
+  const parsed = parseAnalysis(data.response);
+  console.log('[ollama] parsed video:', {
+    altLen: parsed.altText.length,
+    descLen: parsed.description.length,
+    tagCount: parsed.tags.length,
+  });
   return parsed;
 }
 

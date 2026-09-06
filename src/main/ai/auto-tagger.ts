@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3';
-import { analyzeImage, isOllamaRunning } from './ollama-client';
+import { analyzeImage, analyzeVideo, isOllamaRunning } from './ollama-client';
 import { createTagRepo } from '../database/repositories/tags';
 import { createImageRepo } from '../database/repositories/images';
+import { buildContactSheet, isVideoDecoderAvailable } from '../video';
+import { formatDuration, isVideoFileType } from '../../shared/media-type';
 
 /** Bump when the vision model or caption prompt changes — rows below this get re-analyzed on startup. */
 export const CAPTIONS_VERSION = 2;
@@ -34,10 +36,26 @@ export async function autoTagImage(
     return [];
   }
 
+  // Stills are captioned from the thumbnail; videos need the original, since the thumbnail is
+  // a single poster frame and the whole point is to read the clip's motion.
+  const isVideo = isVideoFileType(image.file_type);
   const imagePath = image.thumbnail_path || image.original_path;
 
   try {
-    const analysis = await analyzeImage(imagePath);
+    let analysis;
+    if (isVideo) {
+      if (!isVideoDecoderAvailable()) {
+        console.warn('[auto-tagger] video decoder unavailable, skipping', imageId);
+        return [];
+      }
+      const sheet = await buildContactSheet(image.original_path, image.duration_ms);
+      analysis = await analyzeVideo(sheet.png, {
+        durationLabel: formatDuration(image.duration_ms),
+        frameCount: sheet.timestampsSeconds.length,
+      });
+    } else {
+      analysis = await analyzeImage(imagePath);
+    }
     console.log('[auto-tagger]', imageId, 'altText:', JSON.stringify(analysis.altText.slice(0, 80)));
 
     if (analysis.altText) {

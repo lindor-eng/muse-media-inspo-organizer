@@ -12,6 +12,7 @@ const config: ForgeConfig = {
     asar: false,
     extraResource: [
       path.resolve(__dirname, 'resources/ollama'),
+      path.resolve(__dirname, 'resources/ffmpeg'),
     ],
   },
   rebuildConfig: {},
@@ -20,21 +21,27 @@ const config: ForgeConfig = {
   ],
   hooks: {
     // Runs for `start` and `make` alike, so dev and packaged builds use the same pinned
-    // engine — no reliance on whatever ollama happens to be installed on the machine.
+    // engine and decoder — no reliance on whatever ollama/ffmpeg happens to be installed on
+    // the machine.
     generateAssets: async () => {
       execSync('node scripts/fetch-ollama.mjs', { cwd: __dirname, stdio: 'inherit' });
+      execSync('node scripts/fetch-ffmpeg.mjs', { cwd: __dirname, stdio: 'inherit' });
     },
 
-    // Fail loudly rather than shipping an app whose AI engine is missing. A release built
-    // without this went out once already and left users with an unfixable "engine isn't
-    // running" dialog.
+    // Fail loudly rather than shipping an app whose bundled binaries are missing. A release
+    // built without the Ollama check went out once already and left users with an unfixable
+    // "engine isn't running" dialog; a build without ffmpeg would silently reject every
+    // video import instead.
     prePackage: async () => {
-      const binary = path.resolve(__dirname, 'resources/ollama/ollama');
-      if (!fs.existsSync(binary) || !fs.statSync(binary).isFile()) {
-        throw new Error(
-          `Bundled Ollama engine missing at ${binary}\n` +
-            'Run `npm run fetch:ollama` before packaging.',
-        );
+      const required: Array<{ binary: string; script: string }> = [
+        { binary: 'resources/ollama/ollama', script: 'npm run fetch:ollama' },
+        { binary: 'resources/ffmpeg/ffmpeg', script: 'npm run fetch:ffmpeg' },
+      ];
+      for (const { binary, script } of required) {
+        const full = path.resolve(__dirname, binary);
+        if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+          throw new Error(`Bundled binary missing at ${full}\nRun \`${script}\` before packaging.`);
+        }
       }
     },
 

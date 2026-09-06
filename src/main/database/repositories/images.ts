@@ -23,6 +23,8 @@ export interface ImageRecord {
   imported_at: string;
   file_created_at: string | null;
   file_modified_at: string | null;
+  /** Clip length in ms for video rows; null for stills and undeclared durations. */
+  duration_ms: number | null;
   /** 0 grayscale-dominant, 1 visibly chromatic, null not classified (legacy / failed decode). */
   indexed_chromatic: number | null;
   /** Dominant 30° hue bin 0–11 when color is concentrated (e.g. mostly blue). */
@@ -55,8 +57,8 @@ export function createImageRepo(db: Database.Database) {
   const getByHashStmt = db.prepare('SELECT * FROM images WHERE hash = ?');
 
   const insertStmt = db.prepare(`
-    INSERT INTO images (id, filename, original_path, thumbnail_path, title, width, height, file_size, file_type, hash, folder_id, file_created_at, file_modified_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO images (id, filename, original_path, thumbnail_path, title, width, height, file_size, file_type, hash, folder_id, file_created_at, file_modified_at, duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const updateStmt = db.prepare(`
@@ -145,12 +147,15 @@ export function createImageRepo(db: Database.Database) {
       folder_id: string | null;
       file_created_at: string | null;
       file_modified_at: string | null;
+      /** Only set for videos; stills leave it null. */
+      duration_ms?: number | null;
     }): ImageRecord {
       const id = uuid();
       insertStmt.run(
         id, data.filename, data.original_path, data.thumbnail_path,
         data.title, data.width, data.height, data.file_size, data.file_type,
-        data.hash, data.folder_id, data.file_created_at, data.file_modified_at
+        data.hash, data.folder_id, data.file_created_at, data.file_modified_at,
+        data.duration_ms ?? null
       );
       return getByIdStmt.get(id) as ImageRecord;
     },

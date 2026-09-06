@@ -1,11 +1,12 @@
 import { useCallback, useEffect } from 'react';
 import { Search, Plus, Import, Loader2, Grid2x2, Grid3x3 } from 'lucide-react';
 import { useAppStore, GRID_THUMB_MIN, GRID_THUMB_MAX } from '../../stores/app-store';
+import { describeImportStatus } from '../../../shared/import-status';
 import { ImageCard } from './ImageCard';
 import { EmbeddingProgress } from '../layout/EmbeddingProgress';
 
 export function ContentGrid() {
-  const { images, totalImages, viewMode, selectedFolderId, folders, isImporting, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus, selectedImageIds, clearSelection, gridThumbHeight, setGridThumbHeight } = useAppStore();
+  const { images, totalImages, viewMode, selectedFolderId, folders, importStatus, importFiles, searchQuery, setSearchQuery, executeSearch, isSearching, selectedImageId, isClosingFocus, selectedImageIds, clearSelection, gridThumbHeight, setGridThumbHeight } = useAppStore();
   const showToolbar = !selectedImageId || isClosingFocus;
 
   useEffect(() => {
@@ -114,10 +115,10 @@ export function ContentGrid() {
           of the scroll container, so it doesn't move with grid scroll). */}
       <div className="flex-1 relative min-h-0">
         <div data-grid-canvas className="absolute inset-0 overflow-y-auto p-4">
-        {isImporting && (
+        {importStatus && (
           <div className="mb-4 px-4 py-3 bg-blue-900/30 border border-blue-800 rounded-lg text-sm text-blue-300 flex items-center gap-2">
-            <Import size={14} className="animate-pulse" />
-            Importing files...
+            <Import size={14} className={importStatus.phase === 'done' ? undefined : 'animate-pulse'} />
+            {describeImportStatus(importStatus)}
           </div>
         )}
 
@@ -125,7 +126,7 @@ export function ContentGrid() {
           <div className="flex flex-col items-center justify-center h-full text-gray-500">
             <Images size={48} className="mb-4 opacity-50" />
             <p className="text-sm">No images here yet</p>
-            <p className="text-xs mt-1">Drag and drop files or click Import</p>
+            <p className="text-xs mt-1">Drag and drop images, folders, or zips — or click Import</p>
           </div>
         ) : (
           <div className="flex flex-wrap gap-3 items-start">

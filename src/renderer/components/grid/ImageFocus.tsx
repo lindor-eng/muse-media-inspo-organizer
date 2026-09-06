@@ -4,6 +4,7 @@ import { useAppStore, type ImageRecord } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 import { SimilarImagesStrip } from '../detail/SimilarImagesStrip';
 import { SimilarityInspectorPopover } from '../detail/SimilarityInspectorPopover';
+import { isVideoFileType } from '../../../shared/media-type';
 
 type Phase = 'measure' | 'initial' | 'animating' | 'done' | 'exit-start' | 'exiting';
 
@@ -228,6 +229,8 @@ export function ImageFocus() {
   }, [isPanning]);
 
   const handleWheel = (e: React.WheelEvent) => {
+    // Zoom is a still-image affordance; on a video the wheel belongs to the player.
+    if (imageRef.current && isVideoFileType(imageRef.current.file_type)) return;
     e.preventDefault();
     const delta = -e.deltaY * 0.005;
     handleZoomChange(zoom + delta);
@@ -236,6 +239,22 @@ export function ImageFocus() {
   if (!image) return null;
 
   const src = `local-file://${image.original_path}`;
+  // Videos play here — this is the one place in the app that shows the clip itself rather
+  // than its poster. The open/close transition still animates the poster: it has to match the
+  // still the grid card was showing, and a <video> can't be handed the same treatment mid-seek.
+  const isVideo = isVideoFileType(image.file_type);
+  const posterSrc = image.thumbnail_path ? `local-file://${image.thumbnail_path}` : src;
+  const overlaySrc = isVideo ? posterSrc : src;
+  // Video is the one thing that does NOT go through `local-file://`. Chromium won't issue
+  // follow-up range requests to a custom protocol handler, so a clip served that way plays its
+  // first chunk and then dies with MEDIA_ERR_SRC_NOT_SUPPORTED as soon as the demuxer reaches
+  // for the moov atom at the end of the file — and the scrub bar never works, because
+  // `video.seekable` comes back empty. Chromium's own file loader handles ranges natively, and
+  // the window already runs with webSecurity disabled, so point the player straight at the file.
+  // encodeURI leaves `#` and `?` alone, and either one would truncate the path into a
+  // fragment or query — the library lives under the user's home directory, so the path is
+  // theirs, not ours, to assume anything about.
+  const videoSrc = `file://${encodeURI(image.original_path).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
 
   const getOverlayStyle = (): React.CSSProperties | null => {
     if (!targetRect) return null;
@@ -309,7 +328,7 @@ export function ImageFocus() {
 
           <div className="flex-1" />
 
-          <div className="flex items-center gap-2">
+          <div className={`items-center gap-2 ${isVideo ? 'hidden' : 'flex'}`}>
             <ZoomOut size={14} className="text-gray-500" />
             <input
               type="range"
@@ -333,22 +352,46 @@ export function ImageFocus() {
         onMouseUp={handleMouseUp}
         onWheel={handleWheel}
       >
-        {phase === 'done' && targetRect && (
-          <img
-            src={src}
-            alt={image.title || image.filename}
-            className="absolute select-none rounded-lg object-contain"
-            draggable={false}
-            style={{
-              left: targetRect.x - (containerRef.current?.getBoundingClientRect().x ?? 0),
-              top: targetRect.y - (containerRef.current?.getBoundingClientRect().y ?? 0),
-              width: targetRect.width,
-              height: targetRect.height,
-              transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-              transition: isPanning ? 'none' : 'transform 150ms ease-out',
-            }}
-          />
-        )}
+        {phase === 'done' && targetRect && (() => {
+          const frame: React.CSSProperties = {
+            left: targetRect.x - (containerRef.current?.getBoundingClientRect().x ?? 0),
+            top: targetRect.y - (containerRef.current?.getBoundingClientRect().y ?? 0),
+            width: targetRect.width,
+            height: targetRect.height,
+          };
+
+          // Muted, looping autoplay is what a reference library wants: the clip starts on its
+          // own the way it would on a moodboard site, and `controls` is there for anyone who
+          // wants sound, a scrub, or a pause. `key` forces a fresh element per clip so arrow-key
+          // navigation between videos doesn't keep the previous one's playback position.
+          return isVideo ? (
+            <video
+              key={image.id}
+              src={videoSrc}
+              poster={posterSrc}
+              controls
+              autoPlay
+              loop
+              muted
+              playsInline
+              aria-label={image.alt_text || image.title || image.filename}
+              className="absolute select-none rounded-lg object-contain bg-black"
+              style={frame}
+            />
+          ) : (
+            <img
+              src={src}
+              alt={image.alt_text || image.title || image.filename}
+              className="absolute select-none rounded-lg object-contain"
+              draggable={false}
+              style={{
+                ...frame,
+                transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+                transition: isPanning ? 'none' : 'transform 150ms ease-out',
+              }}
+            />
+          );
+        })()}
       </div>
 
       <footer
@@ -395,8 +438,8 @@ export function ImageFocus() {
       </footer>
       {overlayStyle && (
         <img
-          src={src}
-          alt={image.title || image.filename}
+          src={overlaySrc}
+          alt={image.alt_text || image.title || image.filename}
           className="select-none"
           draggable={false}
           style={overlayStyle}
