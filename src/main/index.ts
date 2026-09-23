@@ -7,6 +7,8 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { ensureOllamaServer, stopOllamaServer } from './ai/ollama-server';
 import { backfillMissingPalettes } from './color-extractor';
 import { upgradeEmbeddingIndexIfNeeded } from './ai/embeddings';
+import { startCaptureServer } from './capture-server';
+import { showInstallBrowserExtension, syncBrowserExtension } from './browser-extension';
 import { checkForUpdate, downloadUpdate, installAndRestart, type UpdateInfo } from './updater';
 
 if (started) app.quit();
@@ -66,6 +68,11 @@ function buildAppMenu(): void {
         { label: 'Export Library…', click: sendToRenderer('menu:exportLibrary') },
         { label: 'Import Library…', click: sendToRenderer('menu:importLibrary') },
         { type: 'separator' },
+        {
+          label: 'Install Browser Extension…',
+          click: () => void showInstallBrowserExtension(BrowserWindow.getFocusedWindow()),
+        },
+        { type: 'separator' },
         { label: 'Update AI Model…', click: sendToRenderer('menu:updateModel') },
         { label: 'Check for Updates…', click: sendToRenderer('menu:checkUpdate') },
       ],
@@ -91,6 +98,10 @@ app.on('ready', async () => {
   const ipcHooks = registerIpcHandlers(db, ipcMain);
   buildAppMenu();
   createWindow();
+  // Receives media from the "Send to Muse" browser extension, and keeps the copy users load
+  // into their browser in step with this build.
+  startCaptureServer(ipcHooks.importCaptured);
+  syncBrowserExtension();
 
   // Start managed Ollama server in background. A failure here is no longer terminal for the
   // session — File → Update AI Model retries through the same path.

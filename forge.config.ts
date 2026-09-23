@@ -13,6 +13,8 @@ const config: ForgeConfig = {
     extraResource: [
       path.resolve(__dirname, 'resources/ollama'),
       path.resolve(__dirname, 'resources/ffmpeg'),
+      // Loaded unpacked by users via File → Install Browser Extension (see src/main/browser-extension.ts).
+      path.resolve(__dirname, 'browser-extension'),
     ],
   },
   rebuildConfig: {},
@@ -37,6 +39,13 @@ const config: ForgeConfig = {
         { binary: 'resources/ollama/ollama', script: 'npm run fetch:ollama' },
         { binary: 'resources/ffmpeg/ffmpeg', script: 'npm run fetch:ffmpeg' },
       ];
+      // Without the key the extension gets a random ID, and the capture server rejects it.
+      const manifest = JSON.parse(
+        fs.readFileSync(path.resolve(__dirname, 'browser-extension/manifest.json'), 'utf-8'),
+      );
+      if (typeof manifest.key !== 'string') {
+        throw new Error('browser-extension/manifest.json has no "key"; the extension ID would not be fixed.');
+      }
       for (const { binary, script } of required) {
         const full = path.resolve(__dirname, binary);
         if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {

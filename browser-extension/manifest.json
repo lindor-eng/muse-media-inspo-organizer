@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Send to Muse",
+  "version": "1.0.0",
+  "description": "Hover any image or video and click to add it to your Muse library.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwJMoifSt47VSUsZbquBSswhRcC4cxZlA7XErxO1QUE/9ziubiH+2g6vUBoAdl+7eDzKKhSf1li/eL/ZudTOI9h1UqElc656cnImkRFKGFVAyCgS3OqPy3VuUT1cmqurYbXL1DeJb4vwMnGbpeMgGnguYCbuXWZM+k9FwVjS60eW84tPU/wROvZfzN+9zZL43ertc2OdTm3tOeAGq2KHrZI8lqDYLZFMFiZMrEKVS7CZQCILKkL2OOC0TUPwgGLrZWyqTBDmC2io9t5BgfJW0pYPdW2xp9NUIzxOO3t1zbS5pYc7L/fpCQd6izjtjQrd5x1Svdqy0jt5jAI3ZmaMv9QIDAQAB",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Send to Muse — click to start capturing",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+M"
+      },
+      "description": "Toggle capture mode"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

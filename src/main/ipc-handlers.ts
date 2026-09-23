@@ -34,6 +34,9 @@ export interface IpcHooks {
   /** Queue a caption refresh (re-analyze + re-embed) for images captioned by an older
       model/prompt generation. Call after the Ollama server is confirmed up. */
   queueCaptionUpgradeIfNeeded: () => number;
+  /** Store media sent from the browser extension (see `capture-server.ts`), then refresh the
+      grid and queue enrichment exactly as a drop would. */
+  importCaptured: (buffer: Buffer, filename: string) => Promise<ImportResult>;
 }
 
 /** Non-trashed image count — used to size the "Update AI Model" re-analyze prompt. */
@@ -348,6 +351,23 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
     },
   );
 
+  // Browser captures arrive over HTTP, not IPC, so nothing in the renderer is awaiting them —
+  // main has to announce the result itself: the banner summary, then a grid refresh.
+  async function importCaptured(buffer: Buffer, filename: string): Promise<ImportResult> {
+    const result = await importFromBuffer(db, buffer, filename, null);
+    broadcastImport({
+      phase: 'done',
+      imported: result.success ? 1 : 0,
+      duplicates: result.duplicate ? 1 : 0,
+      failed: !result.success && !result.duplicate ? 1 : 0,
+      foldersCreated: 0,
+      emptySources: 0,
+    });
+    if (result.success) BrowserWindow.getAllWindows()[0]?.webContents.send('files-imported');
+    await enrichImportResults([result]);
+    return result;
+  }
+
   // AI
   ipcMain.handle('ai:reanalyzeImages', async (_, imageIds: string[]) => {
     if (imageIds.length === 0) return { processed: 0, total: 0 };
@@ -525,5 +545,6 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
       if (!aiDraining) void drainAiQueue();
       return queued;
     },
+    importCaptured,
   };
 }

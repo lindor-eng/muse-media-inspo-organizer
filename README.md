@@ -55,6 +55,10 @@ src/
     └── preload.ts       # contextBridge + file drop handling
 ```
 
+## Browser Extension
+
+`browser-extension/` has **Send to Muse**, a Chrome extension. Click its toolbar icon, hover any image or video on a page, and click to add it to your library. To install it, choose **File → Install Browser Extension…** in Muse. Muse opens your browser's Extensions page and walks you through loading the extension. See [browser-extension/README.md](browser-extension/README.md).
+
 ## AI Features (Optional)
 
 The app bundles and manages its own Ollama server — there's nothing to install or start by hand. On first launch it offers to download the two models it needs:

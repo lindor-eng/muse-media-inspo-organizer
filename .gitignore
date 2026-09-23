@@ -102,3 +102,6 @@ resources/ffmpeg
 
 # Download cache for the bundled engine/decoder archives
 .cache/
+
+# Signing key for the Send to Muse extension (fixes its ID). Back it up; never commit it.
+.keys/
