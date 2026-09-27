@@ -9,6 +9,7 @@ import { backfillMissingPalettes } from './color-extractor';
 import { upgradeEmbeddingIndexIfNeeded } from './ai/embeddings';
 import { startCaptureServer } from './capture-server';
 import { showInstallBrowserExtension, syncBrowserExtension } from './browser-extension';
+import { clearDragStaging } from './drag-out';
 import { checkForUpdate, downloadUpdate, installAndRestart, type UpdateInfo } from './updater';
 
 if (started) app.quit();
@@ -44,8 +45,12 @@ const createWindow = () => {
     );
   }
 
+  // Keep the window on the app (a link or file dropped outside the drop handler would otherwise
+  // replace it), but let the app reload itself. In dev, Vite's client can send a full reload
+  // while the first load is still in progress; cancelling it stops that load midway, and the
+  // window stays blank because main.tsx never runs.
   mainWindow.webContents.on('will-navigate', (e) => {
-    e.preventDefault();
+    if (e.url !== mainWindow?.webContents.getURL()) e.preventDefault();
   });
 };
 
@@ -102,6 +107,8 @@ app.on('ready', async () => {
   // into their browser in step with this build.
   startCaptureServer(ipcHooks.importCaptured);
   syncBrowserExtension();
+  // Copies staged by drags out to Finder last session; any drop that used them has finished.
+  clearDragStaging();
 
   // Start managed Ollama server in background. A failure here is no longer terminal for the
   // session — File → Update AI Model retries through the same path.

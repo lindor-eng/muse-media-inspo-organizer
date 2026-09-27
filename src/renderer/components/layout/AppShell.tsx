@@ -19,7 +19,8 @@ export function AppShell() {
     const isExternalDrag = (e: DragEvent) => {
       const types = e.dataTransfer?.types;
       if (!types) return false;
-      if (types.includes('application/x-muse-image')) return false;
+      // Our own cards, dragged out as files (see ImageCard), look external from here.
+      if (useAppStore.getState().draggingImageId) return false;
       // Local file drag, browser image drag (uri-list / html / x-moz-url), or pasted URL string.
       return (
         types.includes('Files') ||

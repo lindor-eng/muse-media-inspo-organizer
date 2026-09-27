@@ -163,6 +163,10 @@ const api = {
     return () => { ipcRenderer.removeListener('library:import:dropped', handler); };
   },
 
+  /** Drag library items out to Finder as real files. Call from `dragstart` after
+      `preventDefault()`; resolves when the user lets go. */
+  startDrag: (imageIds: string[]) => ipcRenderer.invoke('drag:start', imageIds) as Promise<void>,
+
   // Clipboard
   copyImageToClipboard: (filePath: string) => ipcRenderer.invoke('clipboard:copyImage', filePath),
 

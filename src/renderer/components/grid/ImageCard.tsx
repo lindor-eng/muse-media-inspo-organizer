@@ -69,14 +69,17 @@ function ImageCardImpl({ image }: Props) {
     ? Array.from(useAppStore.getState().selectedImageIds)
     : [image.id];
 
+  // The drag is handed to macOS so it carries the real files: drop on Finder, the Desktop, or
+  // another app and you get the original. It still works inside Muse — draggingImageId stays
+  // set until the drag ends, which is how the sidebar knows a folder drop is a move.
   const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData('application/x-muse-image', image.id);
-    e.dataTransfer.effectAllowed = 'all';
+    e.preventDefault();
+    const { selectedImageIds } = useAppStore.getState();
+    const ids = selectedImageIds.size > 1 && selectedImageIds.has(image.id)
+      ? Array.from(selectedImageIds)
+      : [image.id];
     setDraggingImage(image.id);
-  };
-
-  const handleDragEnd = () => {
-    setTimeout(() => setDraggingImage(null), 0);
+    void api.startDrag(ids).finally(() => setTimeout(() => setDraggingImage(null), 0));
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -191,7 +194,6 @@ function ImageCardImpl({ image }: Props) {
         data-image-id={image.id}
         draggable
         onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
         onContextMenu={handleContextMenu}
         className={`cursor-pointer rounded-lg overflow-hidden border-2 relative
           ${isBulkSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : isSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : 'border-transparent hover:border-gray-700'}`}

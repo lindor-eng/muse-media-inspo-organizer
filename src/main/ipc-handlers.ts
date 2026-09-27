@@ -29,6 +29,7 @@ import {
 } from './ai/ollama-server';
 import { exportLibrary } from './library-export';
 import { inspectImport, applyImport, cancelImport } from './library-import';
+import { isStagedDragPath, startDragOut } from './drag-out';
 
 export interface IpcHooks {
   /** Queue a caption refresh (re-analyze + re-embed) for images captioned by an older
@@ -302,7 +303,12 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
     win?.webContents.send('import:progress', status);
   }
 
-  ipcMain.handle('import:files', async (_, filePaths: string[], folderId: string | null) => {
+  ipcMain.handle('import:files', async (_, droppedPaths: string[], folderId: string | null) => {
+    // Items dragged out of Muse and released back over its own window are already here.
+    const filePaths = droppedPaths.filter((p) => !isStagedDragPath(p));
+    if (droppedPaths.length > 0 && filePaths.length === 0) {
+      return { results: [], imported: 0, duplicates: 0, failed: 0, foldersCreated: 0, bundles: [], emptySources: [] };
+    }
     console.log('[import:files] called with paths:', filePaths);
     const summary = await importFiles(db, filePaths, folderId, broadcastImport);
 
@@ -455,6 +461,21 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
   ipcMain.handle('settings:getSimilarityPrefs', () => loadSimilarityPrefs(db));
   ipcMain.handle('settings:setSimilarityPrefs', (_, prefs: Partial<SimilarityPrefs>) => saveSimilarityPrefs(db, prefs));
 
+
+  // Drag out to Finder. Takes ids, never paths: the renderer can only drag library items.
+  // Resolves when the drag ends (see startDragOut).
+  ipcMain.handle('drag:start', async (event, imageIds: unknown) => {
+    if (!Array.isArray(imageIds)) return;
+    const images = imageIds
+      .filter((id): id is string => typeof id === 'string')
+      .map((id) => imageRepo.getById(id))
+      .filter((image): image is NonNullable<typeof image> => Boolean(image));
+    try {
+      await startDragOut(event.sender, images);
+    } catch (err) {
+      console.warn('[drag-out] drag failed:', err);
+    }
+  });
 
   // Clipboard
   ipcMain.handle('clipboard:copyImage', async (_, filePath: string) => {

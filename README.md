@@ -45,6 +45,7 @@ src/
 │   ├── importer.ts       # Import pipeline (files, folders, zips, URLs, buffers)
 │   ├── import-scan.ts    # Expands dropped folders/zips into media + folder structure
 │   ├── video.ts          # ffmpeg: poster frames, duration, vision contact sheets
+│   ├── drag-out.ts       # Drag items out to Finder as their original files
 │   ├── color-extractor.ts
 │   └── ai/              # Ollama integration (vision + text embeddings)
 ├── renderer/            # React frontend

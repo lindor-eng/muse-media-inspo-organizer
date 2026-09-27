@@ -227,7 +227,9 @@ export function Sidebar() {
   const handleFolderDragOver = (e: React.DragEvent, folderId: string) => {
     if (draggingImageId) {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
+      // The drag is a native file drag (see ImageCard); ask for a move only if macOS offers one,
+      // or the drop is refused.
+      e.dataTransfer.dropEffect = /move|all/i.test(e.dataTransfer.effectAllowed) ? 'move' : 'copy';
       setDropTargetId(folderId);
     }
   };

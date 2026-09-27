@@ -383,7 +383,15 @@ export function ImageFocus() {
               src={src}
               alt={image.alt_text || image.title || image.filename}
               className="absolute select-none rounded-lg object-contain"
-              draggable={false}
+              // Unzoomed, the picture drags out to Finder like a grid card; zoomed, a drag pans.
+              draggable={!isZoomed}
+              onDragStart={(e) => {
+                e.preventDefault();
+                if (isZoomed) return;
+                const { setDraggingImage } = useAppStore.getState();
+                setDraggingImage(image.id);
+                void api.startDrag([image.id]).finally(() => setTimeout(() => setDraggingImage(null), 0));
+              }}
               style={{
                 ...frame,
                 transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
