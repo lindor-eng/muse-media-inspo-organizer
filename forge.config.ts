@@ -3,7 +3,41 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import path from 'node:path';
 import fs from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
+import { signAsync } from '@electron/osx-sign';
+
+// Release builds are signed with these Developer ID certificates (both must be in the login
+// keychain) and notarized through a notarytool keychain profile. Create the profile once with
+//   xcrun notarytool store-credentials muse-notary
+// MUSE_UNSIGNED=1 skips signing and notarization entirely (for machines without the
+// certificates); MUSE_SKIP_NOTARIZE=1 signs but doesn't submit to Apple. Neither produces an
+// installer Gatekeeper will accept, so both stamp the filename to keep it out of a release.
+const APP_IDENTITY = 'Developer ID Application: Brian Lin (ANU6XZL47Z)';
+const INSTALLER_IDENTITY = 'Developer ID Installer: Brian Lin (ANU6XZL47Z)';
+const NOTARY_PROFILE = process.env.MUSE_NOTARY_PROFILE || 'muse-notary';
+const UNSIGNED = process.env.MUSE_UNSIGNED === '1';
+const NOTARIZE = !UNSIGNED && process.env.MUSE_SKIP_NOTARIZE !== '1';
+
+/**
+ * Submit the installer to Apple's notary service and staple the ticket to it. notarytool exits 0
+ * even when Apple rejects the submission, so the verdict is read from its JSON output; on a
+ * rejection the notary log (which names each offending binary) is printed before failing.
+ */
+function notarize(pkgPath: string): void {
+  console.log(`[notarize] Submitting ${path.basename(pkgPath)} (profile "${NOTARY_PROFILE}")…`);
+  const raw = execFileSync(
+    'xcrun',
+    ['notarytool', 'submit', pkgPath, '--keychain-profile', NOTARY_PROFILE, '--wait', '--output-format', 'json'],
+    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'inherit'] },
+  );
+  const { id, status } = JSON.parse(raw) as { id: string; status: string };
+  if (status !== 'Accepted') {
+    execFileSync('xcrun', ['notarytool', 'log', id, '--keychain-profile', NOTARY_PROFILE], { stdio: 'inherit' });
+    throw new Error(`Notarization ${status} (submission ${id}); see the log above.`);
+  }
+  execFileSync('xcrun', ['stapler', 'staple', pkgPath], { stdio: 'inherit' });
+  console.log(`[notarize] Accepted and stapled (submission ${id})`);
+}
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -81,25 +115,38 @@ const config: ForgeConfig = {
         { cwd: appPath, stdio: 'inherit' }
       );
 
-      // Build unsigned .pkg installer with postinstall script to remove quarantine
+      // Sign here rather than through packagerConfig.osxSign: the packager signs before this
+      // hook runs, and the install + rebuild above would invalidate that seal. Covers every
+      // binary in the bundle (Electron, the native modules, the Ollama tree, ffmpeg) with the
+      // hardened runtime and a secure timestamp, which is what notarization requires.
       const appBundle = path.join(options.outputPaths[0], 'Muse.app');
+      if (!UNSIGNED) {
+        console.log(`[sign] Signing Muse.app as "${APP_IDENTITY}"…`);
+        await signAsync({ app: appBundle, identity: APP_IDENTITY });
+      }
+
+      // Build the .pkg installer (its postinstall script strips any leftover quarantine flag)
       const scriptsDir = path.resolve(__dirname, 'resources/scripts');
       const outDir = path.resolve(__dirname, 'out/make');
       fs.mkdirSync(outDir, { recursive: true });
       // Version + arch in the filename so released installers are self-identifying and
       // successive builds don't silently overwrite each other.
       const componentPkg = path.join(outDir, 'Muse-component.pkg');
-      const finalPkg = path.join(outDir, `Muse-Installer-${pkgJson.version}-${options.arch}.pkg`);
+      const suffix = UNSIGNED ? '-unsigned' : NOTARIZE ? '' : '-unnotarized';
+      const finalPkg = path.join(outDir, `Muse-Installer-${pkgJson.version}-${options.arch}${suffix}.pkg`);
       execSync(
         `pkgbuild --component "${appBundle}" --install-location /Applications --scripts "${scriptsDir}" "${componentPkg}"`,
         { stdio: 'inherit' }
       );
+      const signArgs = UNSIGNED ? '' : `--sign "${INSTALLER_IDENTITY}" --timestamp `;
       execSync(
-        `productbuild --package "${componentPkg}" "${finalPkg}"`,
+        `productbuild ${signArgs}--package "${componentPkg}" "${finalPkg}"`,
         { stdio: 'inherit' }
       );
       fs.unlinkSync(componentPkg);
       console.log(`[pkg] Built installer: ${finalPkg}`);
+
+      if (NOTARIZE) notarize(finalPkg);
     },
   },
   plugins: [
