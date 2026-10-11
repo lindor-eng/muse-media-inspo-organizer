@@ -249,7 +249,7 @@ nativeTheme.on('updated', () => {
   mainWindow?.webContents.send('theme:changed', nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
 });
 
-// App auto-update (GitHub Releases → unsigned .pkg → osascript installer → relaunch).
+// App auto-update (GitHub Releases → signed .pkg → osascript installer → relaunch).
 ipcMain.handle('update:check', () => checkForUpdate());
 
 ipcMain.handle('update:download', async (_event, info: UpdateInfo) => {

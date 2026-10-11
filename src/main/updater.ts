@@ -4,11 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// Muse ships as an UNSIGNED .pkg (it bundles Ollama), which rules out the standard Squirrel /
-// electron-updater silent binary swap — that path requires code signing. So updates are delivered
-// as a new .pkg attached to a GitHub Release: we read the latest release for the version + changelog,
-// download the .pkg asset, then hand it to macOS `installer` (via osascript, one admin prompt) and
-// relaunch. The repo is public, so the Releases API needs no auth token.
+// Updates are delivered as a new .pkg attached to a GitHub Release rather than through the
+// standard Squirrel / electron-updater silent binary swap. That dates from when Muse shipped
+// unsigned (Squirrel requires code signing); the .pkg is signed and notarized now, but this flow
+// is the one every released version knows how to consume. We read the latest release for the
+// version + changelog, download the .pkg asset, then hand it to macOS `installer` (via osascript,
+// one admin prompt) and relaunch. The repo is public, so the Releases API needs no auth token.
 const REPO = 'lindor-eng/muse-media-inspo-organizer';
 const LATEST_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 
@@ -210,7 +211,7 @@ function appleScriptQuote(value: string): string {
 /**
  * Install the downloaded .pkg and relaunch Muse into the new version. macOS `installer` needs root
  * to write /Applications, so we go through osascript's `with administrator privileges`, which shows
- * the native password prompt (unavoidable for an unsigned pkg going to /Applications). We escape the
+ * the native password prompt. We escape the
  * path for AppleScript, then relaunch. If the user cancels the prompt, osascript exits non-zero and
  * we throw so the UI can recover instead of quitting.
  */

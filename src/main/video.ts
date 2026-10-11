@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { app } from 'electron';
 import sharp from 'sharp';
@@ -59,10 +59,9 @@ function resolveFfmpegPath(): string {
 }
 
 /**
- * Same failure mode the Ollama engine hits: installing from the .zip rather than the .pkg
- * leaves the quarantine flag set and some extractors drop the executable bit, either of which
- * turns every video import into an EACCES. Both repairs are cheap and idempotent, so do them
- * once per session before the first decode.
+ * Same failure mode the Ollama engine hits: some zip extractors drop the executable bit, which
+ * turns every video import into an EACCES. The repair is cheap and idempotent, so do it once
+ * per session before the first decode.
  */
 function prepareBinary(binPath: string): void {
   if (preparedBinary === binPath) return;
@@ -73,12 +72,6 @@ function prepareBinary(binPath: string): void {
     fs.chmodSync(binPath, 0o755);
   } catch (err) {
     console.warn('[video] chmod ffmpeg failed:', err);
-  }
-  try {
-    execFileSync('/usr/bin/xattr', ['-d', 'com.apple.quarantine', binPath], { stdio: 'ignore' });
-    console.log('[video] Cleared quarantine flag on ffmpeg');
-  } catch {
-    // Non-zero exit means the attribute wasn't there — the healthy case.
   }
 }
 

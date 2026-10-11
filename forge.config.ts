@@ -125,8 +125,7 @@ const config: ForgeConfig = {
         await signAsync({ app: appBundle, identity: APP_IDENTITY });
       }
 
-      // Build the .pkg installer (its postinstall script strips any leftover quarantine flag)
-      const scriptsDir = path.resolve(__dirname, 'resources/scripts');
+      // Build the .pkg installer
       const outDir = path.resolve(__dirname, 'out/make');
       fs.mkdirSync(outDir, { recursive: true });
       // Version + arch in the filename so released installers are self-identifying and
@@ -135,7 +134,7 @@ const config: ForgeConfig = {
       const suffix = UNSIGNED ? '-unsigned' : NOTARIZE ? '' : '-unnotarized';
       const finalPkg = path.join(outDir, `Muse-Installer-${pkgJson.version}-${options.arch}${suffix}.pkg`);
       execSync(
-        `pkgbuild --component "${appBundle}" --install-location /Applications --scripts "${scriptsDir}" "${componentPkg}"`,
+        `pkgbuild --component "${appBundle}" --install-location /Applications "${componentPkg}"`,
         { stdio: 'inherit' }
       );
       const signArgs = UNSIGNED ? '' : `--sign "${INSTALLER_IDENTITY}" --timestamp `;

@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -7,7 +7,7 @@ import type { OllamaStartFailure, OllamaStartResult } from '../../shared/ollama-
 
 const OLLAMA_PORT = 11434;
 const OLLAMA_HOST = `http://127.0.0.1:${OLLAMA_PORT}`;
-/** Generous on purpose: a first cold start of a large unsigned binary also pays for Gatekeeper
+/** Generous on purpose: a first cold start of a large binary also pays for Gatekeeper
     verification, which routinely outlasts a short timeout on slower machines. */
 const START_TIMEOUT_MS = 60000;
 
@@ -48,11 +48,9 @@ export function getOllamaHost(): string {
 }
 
 /**
- * macOS ships this binary unsigned inside an unsigned app. Installing from the .zip — rather
- * than the .pkg, whose postinstall runs `xattr -cr` — leaves the quarantine flag on it, and
- * some zip extractors drop the executable bit. Either one makes `spawn` fail with EACCES and
- * the AI engine never starts. Both repairs are cheap and idempotent, so run them before every
- * spawn instead of relying on how the user happened to install.
+ * Some zip extractors drop the executable bit, which makes `spawn` fail with EACCES and the AI
+ * engine never starts. The repair is cheap and idempotent, so run it before every spawn instead
+ * of relying on how the user happened to install.
  */
 function prepareBundledBinary(binPath: string): void {
   // Only ever touch the copy we ship. In dev this may be a system ollama, which isn't ours
@@ -72,13 +70,6 @@ function prepareBundledBinary(binPath: string): void {
       // Read-only or root-owned install — spawn will report the real problem.
       console.warn(`[ollama-server] chmod ${name} failed:`, err);
     }
-  }
-
-  try {
-    execFileSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', engineDir], { stdio: 'ignore' });
-    console.log('[ollama-server] Cleared quarantine flag on engine');
-  } catch {
-    // Non-zero exit means the attribute wasn't there — the healthy case.
   }
 }
 

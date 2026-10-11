@@ -20,7 +20,7 @@ export const OLLAMA_FAILURE_MESSAGE: Record<OllamaStartFailure, string> = {
   'binary-missing':
     "The local AI engine is missing from this copy of Muse. Reinstall using the .pkg installer to restore it.",
   'not-executable':
-    "macOS blocked the local AI engine from running. Muse just tried to unblock it — use Try again. If it keeps failing, run `xattr -cr /Applications/Muse.app` in Terminal.",
+    "macOS wouldn't let the local AI engine run. Muse just tried to repair it — use Try again. If it keeps failing, reinstall using the .pkg installer.",
   'spawn-failed':
     "The local AI engine failed to start. Reinstalling with the .pkg installer usually fixes this.",
   timeout:
