@@ -5,6 +5,9 @@ import type { SimilarRefineMode } from '../../shared/similar-refine';
 import type { ImportStatus } from '../../shared/import-status';
 import { api } from '../lib/ipc';
 
+/** Settings sections, in sidebar order. */
+export type SettingsSection = 'general' | 'sync' | 'library' | 'ai' | 'extension' | 'shortcuts';
+
 export type { MatchStrengthTier };
 export type { SimilarRefineMode };
 
@@ -182,6 +185,11 @@ interface AppState {
   importStatus: ImportStatus | null;
   /** Whether the "AI moodboard / new folder" modal is open (triggered by the sidebar + button). */
   moodboardModalOpen: boolean;
+  /** Settings (the gear beside the username, or Muse › Settings…). */
+  settingsOpen: boolean;
+  settingsSection: SettingsSection;
+  /** The AI progress toast is showing; the sync toast sits above it. */
+  aiToastVisible: boolean;
   searchQuery: string;
   isSearching: boolean;
   isCmdHeld: boolean;
@@ -237,6 +245,10 @@ interface AppState {
   importFiles: (filePaths: string[]) => Promise<void>;
   setImportStatus: (status: ImportStatus | null) => void;
   setMoodboardModalOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean) => void;
+  openSettings: (section?: SettingsSection) => void;
+  setSettingsSection: (section: SettingsSection) => void;
+  setAiToastVisible: (visible: boolean) => void;
   createFolder: (name: string, parentId?: string | null) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
   trashImage: (id: string) => Promise<void>;
@@ -264,6 +276,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: 'dark',
   importStatus: null,
   moodboardModalOpen: false,
+  settingsOpen: false,
+  settingsSection: 'general',
+  aiToastVisible: false,
   detailRefreshNonce: 0,
   searchQuery: '',
   isSearching: false,
@@ -614,6 +629,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setImportStatus: (status) => set({ importStatus: status }),
 
   setMoodboardModalOpen: (open) => set({ moodboardModalOpen: open }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  openSettings: (section) => set((state) => ({ settingsOpen: true, settingsSection: section ?? state.settingsSection })),
+  setSettingsSection: (section) => set({ settingsSection: section }),
+  setAiToastVisible: (visible) => set({ aiToastVisible: visible }),
 
   createFolder: async (name, parentId = null) => {
     await api.createFolder(name, parentId ?? null);

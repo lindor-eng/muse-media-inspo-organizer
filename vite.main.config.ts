@@ -12,6 +12,7 @@ export default defineConfig({
         'node-vibrant/node',
         'archiver',
         'extract-zip',
+        'bonjour-service',
       ],
       output: {
         entryFileNames: '[name].js',

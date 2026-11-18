@@ -4,6 +4,8 @@ import os from 'node:os';
 import type { SimilarRefineMode } from '../shared/similar-refine';
 import type { OllamaStartResult } from '../shared/ollama-status';
 import type { ImportStatus } from '../shared/import-status';
+import type { SyncState, SyncSummary } from '../shared/sync-state';
+import type { AiStatus, LibraryInfo, Preferences } from '../shared/preferences';
 
 /** Update metadata surfaced to the renderer — mirrors UpdateInfo in main/updater.ts. Declared
     locally so the preload bundle never imports the main process (which pulls in electron's app). */
@@ -184,13 +186,55 @@ const api = {
 
   // Native menu events ("File → …") forwarded from the main process to the renderer.
   onMenuEvent: (
-    channel: 'menu:importFiles' | 'menu:exportLibrary' | 'menu:importLibrary' | 'menu:updateModel' | 'menu:checkUpdate',
+    channel:
+      | 'menu:importFiles'
+      | 'menu:exportLibrary'
+      | 'menu:importLibrary'
+      | 'menu:updateModel'
+      | 'menu:checkUpdate'
+      | 'menu:openSettings',
     callback: () => void,
   ) => {
     const handler = () => callback();
     ipcRenderer.on(channel, handler);
     return () => { ipcRenderer.removeListener(channel, handler); };
   },
+
+  // Library sync with Muse on other Macs (Settings › Sync).
+  getSyncState: () => ipcRenderer.invoke('sync:getState') as Promise<SyncState>,
+  setSyncEnabled: (enabled: boolean) => ipcRenderer.invoke('sync:setEnabled', enabled) as Promise<SyncState>,
+  setSyncName: (name: string) => ipcRenderer.invoke('sync:setName', name) as Promise<void>,
+  syncNow: () => ipcRenderer.invoke('sync:syncNow') as Promise<void>,
+  pairWith: (deviceId: string) => ipcRenderer.invoke('sync:pair', deviceId) as Promise<void>,
+  confirmPair: () => ipcRenderer.invoke('sync:confirmPair') as Promise<void>,
+  cancelPair: () => ipcRenderer.invoke('sync:cancelPair') as Promise<void>,
+  respondToPair: (session: string, allow: boolean) => ipcRenderer.invoke('sync:respondToPair', session, allow) as Promise<void>,
+  leaveSync: () => ipcRenderer.invoke('sync:leave') as Promise<void>,
+  onSyncState: (callback: (state: SyncState) => void) => {
+    const handler = (_: unknown, state: SyncState) => callback(state);
+    ipcRenderer.on('sync:state', handler);
+    return () => { ipcRenderer.removeListener('sync:state', handler); };
+  },
+
+  onSyncSummary: (callback: (summary: SyncSummary) => void) => {
+    const handler = (_: unknown, summary: SyncSummary) => callback(summary);
+    ipcRenderer.on('sync:summary', handler);
+    return () => { ipcRenderer.removeListener('sync:summary', handler); };
+  },
+
+  // Settings › General, Library, AI, Browser extension.
+  getPreferences: () => ipcRenderer.invoke('prefs:get') as Promise<Preferences>,
+  setPreferences: (patch: Partial<Preferences>) => ipcRenderer.invoke('prefs:set', patch) as Promise<Preferences>,
+  /** Opens what a File menu item opens (export, import, update model, check for updates). */
+  triggerMenu: (channel: 'menu:exportLibrary' | 'menu:importLibrary' | 'menu:updateModel' | 'menu:checkUpdate') =>
+    ipcRenderer.send('menu:trigger', channel),
+  getAppInfo: () => ipcRenderer.invoke('app:info') as Promise<{ version: string; packaged: boolean }>,
+  openReleaseNotes: () => ipcRenderer.invoke('app:openReleaseNotes') as Promise<void>,
+  getLibraryInfo: () => ipcRenderer.invoke('library:info') as Promise<LibraryInfo>,
+  showLibraryInFinder: () => ipcRenderer.invoke('library:showInFinder') as Promise<string>,
+  getAiStatus: () => ipcRenderer.invoke('ai:status') as Promise<AiStatus>,
+  installBrowserExtension: () => ipcRenderer.invoke('extension:install') as Promise<void>,
+  getExtensionStatus: () => ipcRenderer.invoke('extension:status') as Promise<{ listening: boolean }>,
 
   // Library export / import dialogs and IPC.
   chooseSaveLibraryBundle: () => ipcRenderer.invoke('dialog:saveLibraryBundle') as Promise<string | null>,

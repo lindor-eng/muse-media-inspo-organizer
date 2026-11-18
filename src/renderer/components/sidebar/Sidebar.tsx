@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Images, Tag, Trash2, LayoutGrid, Plus, ChevronRight, ChevronDown, Pencil, Trash, HelpCircle } from 'lucide-react';
+import { Images, Tag, Trash2, LayoutGrid, Plus, ChevronRight, ChevronDown, Pencil, Trash, HelpCircle, Settings } from 'lucide-react';
+import { SyncIndicator } from '../settings/SyncIndicator';
 import { useAppStore, type Folder, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
 export function Sidebar() {
-  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder, sidebarWidth, setSidebarWidth, setMoodboardModalOpen } = useAppStore();
+  const { folders, tags, counts, viewMode, selectedFolderId, selectedTagId, setViewMode, deleteFolder, refreshAll, draggingImageId, selectedImageIds, bulkMoveToFolder, sidebarWidth, setSidebarWidth, setMoodboardModalOpen, openSettings } = useAppStore();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   // Section-level collapse for the Folders / Tags groups. Persisted so the layout sticks across launches.
   const [foldersCollapsed, setFoldersCollapsed] = useState<boolean>(() => {
@@ -397,6 +398,16 @@ export function Sidebar() {
         <h1 className="text-sm font-semibold text-gray-200 truncate flex-1">
           {window.electronAPI.getLocalUsername() || 'Muse'}
         </h1>
+        <SyncIndicator />
+        <button
+          type="button"
+          aria-label="Settings"
+          title="Settings (⌘,)"
+          onClick={() => openSettings()}
+          className="text-gray-500 hover:text-gray-300 transition-colors p-0.5 -m-0.5 mr-2.5 rounded block"
+        >
+          <Settings size={14} />
+        </button>
         <div
           className="relative"
           onMouseEnter={() => setHelpOpen(true)}

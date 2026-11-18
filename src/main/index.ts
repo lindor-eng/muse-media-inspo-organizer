@@ -11,8 +11,17 @@ import { startCaptureServer } from './capture-server';
 import { showInstallBrowserExtension, syncBrowserExtension } from './browser-extension';
 import { clearDragStaging } from './drag-out';
 import { checkForUpdate, downloadUpdate, installAndRestart, type UpdateInfo } from './updater';
+import { startSync } from './sync';
+import { registerSettingsIpc } from './settings-ipc';
+import { getPreferences, setPreferences } from './preferences';
+import { startTrashSweeper } from './trash-sweeper';
+import type { UpdateCheckResult } from './updater';
 
 if (started) app.quit();
+
+// Development only: a second copy of Muse with a library of its own, e.g. for trying sync
+// between two libraries on one Mac. Must be set before anything reads userData.
+if (process.env.MUSE_USER_DATA_DIR) app.setPath('userData', process.env.MUSE_USER_DATA_DIR);
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'local-file', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true } },
@@ -60,7 +69,22 @@ function buildAppMenu(): void {
   };
 
   const template: MenuItemConstructorOptions[] = [
-    { role: 'appMenu' },
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: sendToRenderer('menu:openSettings') },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
     {
       label: 'File',
       submenu: [
@@ -105,7 +129,12 @@ app.on('ready', async () => {
   createWindow();
   // Receives media from the "Send to Muse" browser extension, and keeps the copy users load
   // into their browser in step with this build.
-  startCaptureServer(ipcHooks.importCaptured);
+  // Settings › Browser extension can switch it off.
+  if (getPreferences().acceptCaptures) startCaptureServer(ipcHooks.importCaptured);
+  registerSettingsIpc(db, ipcHooks.importCaptured);
+  startTrashSweeper(db);
+  // Library sync with Muse on other Macs on this network, if it was left on.
+  startSync(db);
   syncBrowserExtension();
   // Copies staged by drags out to Finder last session; any drop that used them has finished.
   clearDragStaging();
@@ -167,9 +196,10 @@ app.on('ready', async () => {
   // dev tree, and there's no installer to swap in). If a newer release exists, tell the renderer so
   // it can prompt; failures stay silent here — the user can still trigger a manual check that does
   // surface errors. Delayed so it never competes with first paint or the Ollama warm-up.
-  if (app.isPackaged) {
+  if (app.isPackaged && getPreferences().checkUpdatesOnLaunch) {
     setTimeout(() => {
       checkForUpdate()
+        .then(recordUpdateCheck)
         .then((result) => {
           if (result.updateAvailable && result.info) {
             mainWindow?.webContents.send('update:available', result.info);
@@ -249,8 +279,21 @@ nativeTheme.on('updated', () => {
   mainWindow?.webContents.send('theme:changed', nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
 });
 
+/** Remembered for Settings › General ("Up to date · checked today at 9:12 AM"). */
+function recordUpdateCheck(result: UpdateCheckResult): UpdateCheckResult {
+  setPreferences({
+    lastUpdateCheck: {
+      at: Date.now(),
+      upToDate: !result.updateAvailable && !result.error,
+      latestVersion: result.info?.version ?? null,
+      error: result.error ?? null,
+    },
+  });
+  return result;
+}
+
 // App auto-update (GitHub Releases → signed .pkg → osascript installer → relaunch).
-ipcMain.handle('update:check', () => checkForUpdate());
+ipcMain.handle('update:check', () => checkForUpdate().then(recordUpdateCheck));
 
 ipcMain.handle('update:download', async (_event, info: UpdateInfo) => {
   const win = BrowserWindow.getAllWindows()[0];

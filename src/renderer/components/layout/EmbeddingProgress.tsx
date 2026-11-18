@@ -1,3 +1,4 @@
+import { useAppStore } from '../../stores/app-store';
 import { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, Brain } from 'lucide-react';
@@ -82,6 +83,12 @@ export function EmbeddingProgress() {
 
     return () => { cleanupAutotag(); cleanupEmbedding(); };
   }, []);
+
+  // Lets the sync toast stack above this one rather than on top of it.
+  const showing = !!progress && visible && !!coords;
+  useEffect(() => {
+    useAppStore.getState().setAiToastVisible(showing);
+  }, [showing]);
 
   if (!progress || !visible || !coords) return null;
 

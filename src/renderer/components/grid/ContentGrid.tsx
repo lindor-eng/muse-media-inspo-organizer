@@ -1,3 +1,4 @@
+import { SyncToast } from '../settings/SyncToast';
 import { useCallback, useEffect } from 'react';
 import { Search, Plus, Import, Loader2, Grid2x2, Grid3x3 } from 'lucide-react';
 import { useAppStore, GRID_THUMB_MIN, GRID_THUMB_MAX } from '../../stores/app-store';
@@ -140,6 +141,7 @@ export function ContentGrid() {
             so it stays bottom-centered on the visible canvas regardless of sidebar / detail panel
             state and doesn't scroll with the grid. */}
         <EmbeddingProgress />
+        <SyncToast />
       </div>
     </main>
   );

@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { createImageRepo } from '../database/repositories/images';
 import { createTagRepo } from '../database/repositories/tags';
 import { embedDocument, isOllamaRunning } from './ollama-client';
+import { markImageChanged } from '../sync/schema';
 
 export function embeddingVectorToBlob(vec: number[]): Buffer {
   const f32 = new Float32Array(vec);
@@ -25,6 +26,8 @@ export function upsertImageEmbedding(db: Database.Database, imageId: string, vec
   const blob = embeddingVectorToBlob(vec);
   db.prepare('DELETE FROM image_embeddings WHERE image_id = ?').run(imageId);
   db.prepare('INSERT INTO image_embeddings (image_id, embedding) VALUES (?, ?)').run(imageId, blob);
+  // sqlite-vec tables can't carry triggers, and the embedding syncs with its image.
+  markImageChanged(db, imageId);
 }
 
 /**

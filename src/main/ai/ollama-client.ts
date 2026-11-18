@@ -41,7 +41,7 @@ export async function unloadModel(): Promise<void> {
   }
 }
 
-const EMBED_MODEL = 'nomic-embed-text';
+export const EMBED_MODEL = 'nomic-embed-text';
 /** nomic-embed-text returns 768-dim vectors. Cached from the first successful call. */
 let cachedEmbedDim: number | null = null;
 

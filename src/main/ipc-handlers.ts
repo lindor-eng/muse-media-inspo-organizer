@@ -30,6 +30,8 @@ import {
 import { exportLibrary } from './library-export';
 import { inspectImport, applyImport, cancelImport } from './library-import';
 import { isStagedDragPath, startDragOut } from './drag-out';
+import { getPreferences } from './preferences';
+import { imagesNeedingCaptionUpgrade } from './ai/caption-sweep';
 
 export interface IpcHooks {
   /** Queue a caption refresh (re-analyze + re-embed) for images captioned by an older
@@ -286,6 +288,8 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
 
     const successfulIds = fresh.map((r) => r.id);
     if (successfulIds.length === 0) return;
+    // Settings › AI › Describe and tag new imports. Palettes above are cheap and stay on.
+    if (!getPreferences().describeImports) return;
 
     if (enqueueAi(successfulIds, 'user') === 0) return;
     // Surface the new total immediately so the toast ticks up before the worker reaches the new item.
@@ -360,7 +364,10 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
   // Browser captures arrive over HTTP, not IPC, so nothing in the renderer is awaiting them —
   // main has to announce the result itself: the banner summary, then a grid refresh.
   async function importCaptured(buffer: Buffer, filename: string): Promise<ImportResult> {
-    const result = await importFromBuffer(db, buffer, filename, null);
+    // Settings › Browser extension › Put captures in. A board deleted since falls back to none.
+    const wanted = getPreferences().captureFolderId;
+    const folderId = wanted && folderRepo.getById(wanted) ? wanted : null;
+    const result = await importFromBuffer(db, buffer, filename, folderId);
     broadcastImport({
       phase: 'done',
       imported: result.success ? 1 : 0,
@@ -550,11 +557,7 @@ export function registerIpcHandlers(db: Database.Database, ipcMain: IpcMain): Ip
 
   return {
     queueCaptionUpgradeIfNeeded(): number {
-      const stale = db
-        .prepare(
-          'SELECT id FROM images WHERE is_trashed = 0 AND COALESCE(captions_version, 1) < ?',
-        )
-        .all(CAPTIONS_VERSION) as Array<{ id: string }>;
+      const stale = imagesNeedingCaptionUpgrade(db, CAPTIONS_VERSION).map((id) => ({ id }));
       if (stale.length === 0) return 0;
 
       // Background lane: this runs because the app decided to, not because anyone asked, so it

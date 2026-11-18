@@ -29,7 +29,7 @@ export const CAPTURE_PORT = 47821;
 /** Big enough for a long screen recording; the importer holds buffer imports in memory whole. */
 const MAX_BODY_BYTES = 512 * 1024 * 1024;
 
-type CaptureImporter = (buffer: Buffer, filename: string) => Promise<ImportResult>;
+export type CaptureImporter = (buffer: Buffer, filename: string) => Promise<ImportResult>;
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -113,7 +113,23 @@ async function normalizeCapture(
   throw new HttpError(415, `Muse can't store ${mime || 'this file type'}`);
 }
 
+let running: http.Server | null = null;
+let listening = false;
+
+/** Whether the extension can reach Muse right now (Settings › Browser extension). */
+export function isCaptureServerListening(): boolean {
+  return listening;
+}
+
+/** Stops listening; the extension then reports that Muse isn't open. */
+export function stopCaptureServer(): void {
+  running?.close();
+  running = null;
+  listening = false;
+}
+
 export function startCaptureServer(importCaptured: CaptureImporter): void {
+  if (running) return;
   const server = http.createServer((req, res) => {
     const origin = req.headers.origin;
 
@@ -189,8 +205,16 @@ export function startCaptureServer(importCaptured: CaptureImporter): void {
 
   // Non-fatal: a second Muse instance (or anything else) holding the port only costs the
   // extension, never the app.
-  server.on('error', (err) => console.warn('[capture] server unavailable:', err.message));
+  server.on('error', (err) => {
+    console.warn('[capture] server unavailable:', err.message);
+    if (running === server) {
+      running = null;
+      listening = false;
+    }
+  });
+  running = server;
   server.listen(CAPTURE_PORT, '127.0.0.1', () => {
+    listening = running === server;
     console.log(`[capture] listening on 127.0.0.1:${CAPTURE_PORT}`);
   });
 }

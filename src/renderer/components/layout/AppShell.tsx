@@ -8,6 +8,8 @@ import { LibraryImportDialog } from './LibraryImportDialog';
 import { ModelUpdateDialog } from './ModelUpdateDialog';
 import { UpdateDialog } from './UpdateDialog';
 import { MoodboardDialog } from './MoodboardDialog';
+import { SettingsDialog } from '../settings/SettingsDialog';
+import { PairingPrompts } from '../settings/PairingPrompts';
 import { useAppStore } from '../../stores/app-store';
 import { api } from '../../lib/ipc';
 
@@ -189,6 +191,11 @@ export function AppShell() {
     });
   }, [importFiles]);
 
+  // Muse › Settings… (⌘,)
+  useEffect(() => {
+    return api.onMenuEvent('menu:openSettings', () => useAppStore.getState().openSettings());
+  }, []);
+
   return (
     <div className={`h-screen flex overflow-hidden ${theme === 'dark' ? 'dark' : ''}`}>
       <Sidebar />
@@ -202,6 +209,8 @@ export function AppShell() {
       <ModelUpdateDialog />
       <UpdateDialog />
       <MoodboardDialog />
+      <SettingsDialog />
+      <PairingPrompts />
       {isDragging && (
         <div className="fixed inset-0 bg-blue-500/10 border-2 border-dashed border-blue-500 z-50 flex items-center justify-center pointer-events-none">
           <div className="bg-gray-900 px-6 py-4 rounded-xl border border-blue-500 shadow-2xl">

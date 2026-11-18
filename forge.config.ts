@@ -44,6 +44,11 @@ const config: ForgeConfig = {
     name: 'Muse',
     icon: path.resolve(__dirname, 'resources/icon'),
     asar: false,
+    extendInfo: {
+      // Library sync finds other Macs over Bonjour; macOS asks once, showing this.
+      NSLocalNetworkUsageDescription: 'Muse looks for Muse on your other Macs so it can keep your libraries in sync.',
+      NSBonjourServices: ['_muse-sync._tcp'],
+    },
     extraResource: [
       path.resolve(__dirname, 'resources/ollama'),
       path.resolve(__dirname, 'resources/ffmpeg'),

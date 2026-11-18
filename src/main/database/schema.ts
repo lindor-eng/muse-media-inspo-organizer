@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { installSyncSchema } from '../sync/schema';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS folders (
@@ -228,4 +229,7 @@ export function runMigrations(db: Database.Database): void {
       // Column/table already exists
     }
   }
+
+  // Last, so the triggers it creates see every column the migrations above added.
+  installSyncSchema(db);
 }

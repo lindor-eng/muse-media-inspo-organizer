@@ -60,6 +60,25 @@ src/
 
 `browser-extension/` has **Send to Muse**, a Chrome extension. Click its toolbar icon, hover any image or video on a page, and click to add it to your library. To install it, choose **File → Install Browser Extension…** in Muse. Muse opens your browser's Extensions page and walks you through loading the extension. See [browser-extension/README.md](browser-extension/README.md).
 
+## Sync Between Macs
+
+Muse can keep its library the same on your other Macs while they're on the same network. Click the gear beside your name (or **Muse → Settings…**, ⌘,), turn on **Sync this library** on each Mac, then click **Pair…** on one of them and check that both show the same six digits. The two libraries merge; from then on images, videos, folders, tags, notes and AI descriptions sync both ways within seconds while both Macs have Muse open, and a Mac that was away catches up when it's back.
+
+While a sync is running, double arrows spin beside your name; hover them to see how many files are left. When it finishes, a toast says what changed (for example "412 added · 3 removed · 7 changed"). Syncing runs in the background and never stops you using Muse.
+
+Only paired Macs can connect, and everything they send each other is encrypted. The first time sync is turned on, macOS asks to let Muse find devices on the local network; it needs that.
+
+## Settings
+
+The gear beside your name (or ⌘,) opens Settings:
+
+- **General:** version, Check for Updates, whether Muse checks when it opens, release notes.
+- **Sync:** see above.
+- **Library:** where it's stored and how big it is, Export/Import Library, and emptying the Trash automatically after 7, 30 or 90 days.
+- **AI:** engine and model status, Update AI Model, Re-analyze Library, whether new imports are described and tagged, and the defaults for similar images.
+- **Browser extension:** install Send to Muse, switch it on or off, and pick the board captures go to.
+- **Shortcuts:** every keyboard shortcut.
+
 ## AI Features (Optional)
 
 The app bundles and manages its own Ollama server — there's nothing to install or start by hand. On first launch it offers to download the two models it needs:
@@ -81,6 +100,7 @@ If you already have an Ollama server on `127.0.0.1:11434`, the app attaches to i
 | `npm run package` | Package the app for distribution |
 | `npm run make` | Create distributable installers |
 | `npm run lint` | Run ESLint |
+| `node scripts/verify-sync.mjs` | End-to-end check of library sync: three libraries syncing on loopback |
 | `npm run fetch:ollama` | Fetch/refresh the bundled Ollama engine (`--force` to re-download) |
 | `npm run fetch:ffmpeg` | Fetch/refresh the bundled ffmpeg decoder (`--force` to re-download) |
 
